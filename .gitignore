@@ -1,0 +1,23 @@
+# Build directories
+build*/
+cmake-build-*/
+
+# IDE
+.idea/
+.vscode/
+compile_commands.json
+.cache/
+
+# OS
+.DS_Store
+
+# Credentials — never commit these
+okx_credentials.txt
+*credentials*
+
+# Data / output
+*.bin
+*.csv
+*.parquet
+split_by_asset/
+logs/

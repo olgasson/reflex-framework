@@ -1,0 +1,6 @@
+BasedOnStyle: Google
+Language: Cpp
+IncludeBlocks: Preserve
+AlignTrailingComments: true
+SortIncludes: false
+ColumnLimit: 120

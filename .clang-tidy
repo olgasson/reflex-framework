@@ -1,0 +1,29 @@
+Checks: >
+  -*,
+  readability-identifier-naming,
+  readability-*,
+  modernize-*,
+  performance-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters
+CheckOptions:
+  - key: readability-identifier-naming.TypeCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberSuffix
+    value: _
+  - key: readability-identifier-naming.ConstantPrefix
+    value: ""
+  - key: readability-identifier-naming.ConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: '1'
+  - key: readability-identifier-length.IgnoredParameterNames
+    value: '^(os|id|it)$'
