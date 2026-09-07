@@ -263,13 +263,14 @@ void BinaryWriterComponent::log_stats() {
 
         // Build type breakdown string
         std::ostringstream type_breakdown;
-        static constexpr std::array<MessageType, 6> tracked_types{
+        static constexpr std::array<MessageType, 7> tracked_types{
             MessageType::L1UpdateEvent,
             MessageType::L2UpdateEvent,
             MessageType::TradeEvent,
             MessageType::MarkPriceEvent,
             MessageType::FundingRateEvent,
-            MessageType::OpenInterestEvent};
+            MessageType::OpenInterestEvent,
+            MessageType::LiquidationEvent};
 
         for (MessageType type : tracked_types) {
             const auto idx = static_cast<size_t>(type);
@@ -298,6 +299,7 @@ void BinaryWriterComponent::log_stats() {
                 case MessageType::MarkPriceEvent: abbrev = "MP"; break;
                 case MessageType::FundingRateEvent: abbrev = "FR"; break;
                 case MessageType::OpenInterestEvent: abbrev = "OI"; break;
+                case MessageType::LiquidationEvent: abbrev = "LQ"; break;
                 default: abbrev = "?"; break;
             }
 

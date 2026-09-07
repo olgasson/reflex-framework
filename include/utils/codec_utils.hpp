@@ -10,7 +10,7 @@ public:
   static constexpr int64_t SCALE = 100000000LL;         // 1e8
 
   // fast: parse ASCII decimal straight to a 1e-8-scaled int64.
-  // Handles an optional leading '-', truncates digits beyond 8 decimal
+  // Handles an optional leading '-' or '+', truncates digits beyond 8 decimal
   // places, stops at the first unexpected character, and saturates to
   // INT64_MAX/INT64_MIN instead of overflowing.
   static inline int64_t encode_price(const char* s) noexcept {
@@ -19,6 +19,8 @@ public:
     bool negative = false;
     if (*s == '-') {
       negative = true;
+      ++s;
+    } else if (*s == '+') {
       ++s;
     }
 

@@ -1,5 +1,6 @@
 #include "../../include/components/blob/okx_blob.hpp"
 
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <thread>
@@ -34,7 +35,10 @@ static Route route_from_root(yyjson_val* root) {
     if (ch) {
       const char* channel_str = yyjson_get_str(ch);
       if (channel_str) {
-        if (strcmp(channel_str, "books-l2-tbt") == 0 || strcmp(channel_str, "books") == 0) return Route::BOOK_L2;
+        if (strcmp(channel_str, "books-l2-tbt") == 0 || strcmp(channel_str, "books50-l2-tbt") == 0 ||
+            strcmp(channel_str, "books") == 0) {
+          return Route::BOOK_L2;
+        }
         if (strcmp(channel_str, "bbo-tbt") == 0) return Route::BBO;
         if (strcmp(channel_str, "mark-price") == 0) return Route::MARK_PRICE;
         if (strcmp(channel_str, "funding-rate") == 0) return Route::FUNDING_RATE;
@@ -63,6 +67,16 @@ OkxBlob::OkxBlob(
       log_buffer_(std::move(log_buffer)),
       claim_strategy_(std::move(claim_strategy)) {
   public_login_required_ = false;
+  if (const char* channel = std::getenv("REFLEX_OKX_BOOK_CHANNEL"); channel != nullptr && *channel != '\0') {
+    const std::string requested{channel};
+    if (requested == "books" || requested == "books-l2-tbt" || requested == "books50-l2-tbt") {
+      book_channel_ = requested;
+      public_login_required_ = requested != "books";
+    } else {
+      logger_->warn("Ignoring unsupported REFLEX_OKX_BOOK_CHANNEL={} (expected books, books-l2-tbt, or books50-l2-tbt)",
+                    requested);
+    }
+  }
   // Constructor stays mostly the same, but don't start connections here
 }
 
@@ -85,6 +99,9 @@ void OkxBlob::on_connecting() {
 }
 
 int OkxBlob::on_do_work() {
+  // Honest work accounting: only frames and state transitions count, so a
+  // backoff idle strategy can engage between messages.
+  frames_this_pass_ = 0;
   int work_count = 0;
 
   // Full websocket servicing.
@@ -105,20 +122,16 @@ int OkxBlob::on_do_work() {
 
   if (public_client_) {
     public_client_->service_ready_fds(all_fds);
-    ++work_count;
   }
   if (business_client_) {
     business_client_->service_ready_fds(all_fds);
-    ++work_count;
   }
 
   if (public_client_ && public_client_->needs_poll()) {
     lws_service(public_client_->get_context(), 0);
-    ++work_count;
   }
   if (business_client_ && business_client_->needs_poll()) {
     lws_service(business_client_->get_context(), 0);
-    ++work_count;
   }
 
   // Drive state machines (this is where your state logic goes)
@@ -163,7 +176,7 @@ int OkxBlob::on_do_work() {
     }
   }
 
-  return work_count;
+  return work_count + frames_this_pass_;
 }
 
 int OkxBlob::drive_connection_state(std::unique_ptr<WebsocketClient>& client, const std::string& channel_name)
@@ -508,6 +521,7 @@ std::string OkxBlob::get_open_interest_subscription(const std::string& symbol) {
 }
 
 void OkxBlob::handle_public_message(std::string_view msg) {
+  ++frames_this_pass_;
   if (msg == "pong") {
     if (public_client_) {
       public_client_->update_pong_timestamp();
@@ -553,6 +567,7 @@ void OkxBlob::handle_public_message(std::string_view msg) {
 }
 
 void OkxBlob::handle_business_message(std::string_view msg) {
+  ++frames_this_pass_;
   if (msg == "pong") {
     if (business_client_) {
       business_client_->update_pong_timestamp();
@@ -889,8 +904,8 @@ void OkxBlob::process_subscription_response(yyjson_val* root) {
     const char* inst_id = yyjson_get_str(yyjson_obj_get(arg, "instId"));
 
     if (channel != nullptr && inst_id != nullptr) {
-      if (strcmp(channel, "books-l2-tbt") == 0) {
-        logger_->info("Subscription confirmed: books-l2-tbt for {}", inst_id);
+      if (strcmp(channel, "books-l2-tbt") == 0 || strcmp(channel, "books50-l2-tbt") == 0) {
+        logger_->info("Subscription confirmed: {} for {}", channel, inst_id);
       } else if (strcmp(channel, "bbo-tbt") == 0) {
         logger_->info("Subscription confirmed: bbo-tbt for {}", inst_id);
       } else if (strcmp(channel, "mark-price") == 0) {

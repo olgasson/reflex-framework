@@ -5,7 +5,6 @@
 #include "launcher_common.hpp"
 
 #include "../../include/framework/agent_runner.hpp"
-#include "../../include/framework/noop_idle_strategy.hpp"
 
 #include "../../include/components/nio/nio_component.hpp"
 #include "../../include/components/blob/okx_blob.hpp"
@@ -51,7 +50,7 @@ int main() {
 
     // Create components
     auto nio_component = std::make_unique<reflex::NIOComponent>(launcher::make_nio_config());
-    auto nio_idle_strategy = std::make_unique<reflex::NoopIdleStrategy>();
+    auto nio_idle_strategy = launcher::make_idle_strategy();
 
     // Add your blob to the NIO component
     auto blob_component = std::make_unique<reflex::OkxBlob>(launcher::make_blob_config(), log_buffer, claim_strategy);
@@ -60,7 +59,7 @@ int main() {
     // Create binary writer component
     auto binary_writer_component = std::make_unique<reflex::BinaryWriterComponent>(
         binary_writer_config, log_buffer, binary_writer_barrier, claim_strategy);
-    auto binary_writer_idle_strategy = std::make_unique<reflex::NoopIdleStrategy>();
+    auto binary_writer_idle_strategy = launcher::make_idle_strategy();
 
     // Error handler
     auto error_handler = [](const std::exception& e) { std::cerr << "Agent error: " << e.what() << std::endl; };

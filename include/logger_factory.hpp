@@ -42,4 +42,23 @@ public:
 
     return logger;
   }
+
+  // Same format as getLogger() but on stderr, for processes whose stdout is
+  // a data stream (e.g. tools that pipe records to another process).
+  static std::shared_ptr<spdlog::logger> getStderrLogger(const std::string& name) {
+    if (auto logger = spdlog::get(name)) return logger;
+
+    static std::mutex creation_mutex;
+    std::lock_guard<std::mutex> lock(creation_mutex);
+    auto logger = spdlog::get(name);
+    if (logger) return logger;
+    logger = spdlog::stderr_color_mt(name);
+    logger->set_level(spdlog::level::info);
+    logger->set_pattern(
+        "\033[33m[%Y-%m-%d %H:%M:%S.%e]\033[0m "
+        "\033[36m[%t]\033[0m "
+        "\033[34m[%n]\033[0m "
+        "%^[%l]:%$ %v");
+    return logger;
+  }
 };

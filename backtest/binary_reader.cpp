@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <utility>
+#include <algorithm>
 
 namespace reflex::backtest {
 
@@ -151,9 +152,25 @@ void BinaryReader::unmap_file() {
 }
 
 // MultiFileBinaryReader implementation
-MultiFileBinaryReader::MultiFileBinaryReader(std::vector<std::string> file_paths)
-    : file_paths_(std::move(file_paths)) {
-    open_current_reader();
+MultiFileBinaryReader::MultiFileBinaryReader(std::vector<std::string> file_paths,
+                                             bool merge_by_timestamp)
+    : file_paths_(std::move(file_paths)),
+      merge_by_timestamp_(merge_by_timestamp) {
+    if (merge_by_timestamp_) {
+        merged_readers_.reserve(file_paths_.size());
+        for (const auto& path : file_paths_) {
+            auto reader = std::make_unique<BinaryReader>(path);
+            if (!reader->open()) {
+                std::cerr << "Failed to open file in timestamp-merged reader: " << path << std::endl;
+                continue;
+            }
+            if (!reader->is_end_of_file()) {
+                merged_readers_.push_back(std::move(reader));
+            }
+        }
+    } else {
+        open_current_reader();
+    }
 }
 
 bool MultiFileBinaryReader::open_current_reader() {
@@ -196,6 +213,18 @@ void MultiFileBinaryReader::advance_to_next_file() {
 }
 
 const MessageSlot* MultiFileBinaryReader::read_next_message() {
+    if (merge_by_timestamp_) {
+        BinaryReader* selected = nullptr;
+        int64_t earliest = INT64_MAX;
+        for (const auto& reader : merged_readers_) {
+            const int64_t timestamp = reader->peek_next_timestamp();
+            if (timestamp < earliest) {
+                earliest = timestamp;
+                selected = reader.get();
+            }
+        }
+        return selected == nullptr ? nullptr : selected->read_next_message();
+    }
     while (open_current_reader()) {
         if (const MessageSlot* slot = current_reader_->read_next_message()) {
             return slot;
@@ -231,6 +260,10 @@ bool MultiFileBinaryReader::is_end_of_files() {
 }
 
 bool MultiFileBinaryReader::has_more_data() {
+    if (merge_by_timestamp_) {
+        return std::any_of(merged_readers_.begin(), merged_readers_.end(),
+                           [](const auto& reader) { return !reader->is_end_of_file(); });
+    }
     // Skip past exhausted files eagerly: open_current_reader() already discards
     // files that fail to open or contain no messages, so "true" here guarantees
     // read_next_message() will produce a slot. (The old implementation counted
@@ -246,6 +279,13 @@ bool MultiFileBinaryReader::has_more_data() {
 }
 
 int64_t MultiFileBinaryReader::peek_next_timestamp() {
+    if (merge_by_timestamp_) {
+        int64_t earliest = INT64_MAX;
+        for (const auto& reader : merged_readers_) {
+            earliest = std::min(earliest, reader->peek_next_timestamp());
+        }
+        return earliest;
+    }
     while (open_current_reader()) {
         const int64_t ts = current_reader_->peek_next_timestamp();
         if (ts != INT64_MAX) {

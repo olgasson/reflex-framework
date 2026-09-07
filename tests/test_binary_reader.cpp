@@ -10,6 +10,7 @@
 #include "messages.hpp"
 
 #include <gtest/gtest.h>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -42,6 +43,14 @@ MessageSlot make_trade(int64_t ts, int32_t instrument_id, int64_t price) {
   e->side_ = Side::Sell;
   e->price_ = price;
   e->size_ = 1;
+  return slot;
+}
+
+template <typename Event>
+MessageSlot slot_with_timestamp(int64_t timestamp_ns) {
+  MessageSlot slot;
+  auto* event = new (slot.raw_data()) Event();
+  event->timestamp_ns_ = timestamp_ns;
   return slot;
 }
 
@@ -111,6 +120,110 @@ TEST(MultiFileBinaryReaderTest, SkipsUnreadableAndHeaderOnlyTrailingFiles) {
   EXPECT_TRUE(reader.is_end_of_files());
   EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
   EXPECT_EQ(reader.read_next_message(), nullptr);
+}
+
+TEST(BinaryReaderTest, PeekNextTimestampHandlesAuxiliaryMarketDataEvents) {
+  const int64_t mark_ts = 1'700'000'000'000'000'001;
+  const int64_t funding_ts = 1'700'000'000'000'000'002;
+  const int64_t open_interest_ts = 1'700'000'000'000'000'003;
+
+  const auto path = write_capture("reflex_reader_aux_events.bin",
+                                  {slot_with_timestamp<MarkPriceEvent>(mark_ts),
+                                   slot_with_timestamp<FundingRateEvent>(funding_ts),
+                                   slot_with_timestamp<OpenInterestEvent>(open_interest_ts)});
+
+  BinaryReader reader(path);
+  ASSERT_TRUE(reader.open());
+
+  EXPECT_EQ(reader.peek_next_timestamp(), mark_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::MarkPriceEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), funding_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::FundingRateEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), open_interest_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::OpenInterestEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
+  reader.close();
+  std::filesystem::remove(path);
+}
+
+// Guard against the historical bug where peek_next_timestamp() returned 0 for
+// unknown event types and dragged the simulation clock back to the epoch:
+// LiquidationEvent must peek its real timestamp and round-trip intact.
+TEST(BinaryReaderTest, PeekNextTimestampHandlesLiquidationEvents) {
+  const int64_t liq_ts = 1'700'000'000'000'000'004;
+  const int64_t trade_ts = 1'700'000'000'000'000'005;
+
+  MessageSlot liq_slot;
+  auto* liq = new (liq_slot.raw_data()) LiquidationEvent();
+  liq->timestamp_ns_ = liq_ts;
+  liq->exchange_timestamp_ns_ = 1'699'999'999'000'000'000;
+  liq->instrument_id_ = 42;
+  liq->exchange_ = Exchange::Okx;
+  liq->side_ = Side::Sell;
+  liq->price_ = 9'910'00000000LL;
+  liq->quantity_ = 1'200'000LL;
+  liq->cumulative_quantity_ = 1'400'000LL;
+  liq->average_price_ = 9'905'00000000LL;
+
+  const auto path = write_capture("reflex_reader_liquidation.bin",
+                                  {liq_slot, slot_with_timestamp<TradeEvent>(trade_ts)});
+
+  BinaryReader reader(path);
+  ASSERT_TRUE(reader.open());
+
+  // Real timestamp, never 0 (which would rewind the merged simulation clock).
+  EXPECT_EQ(reader.peek_next_timestamp(), liq_ts);
+
+  const MessageSlot* slot = reader.read_next_message();
+  ASSERT_NE(slot, nullptr);
+  ASSERT_EQ(slot->get_type(), MessageType::LiquidationEvent);
+  const auto& decoded = slot->as<LiquidationEvent>();
+  EXPECT_EQ(decoded.timestamp_ns_, liq_ts);
+  EXPECT_EQ(decoded.instrument_id_, 42);
+  EXPECT_EQ(decoded.exchange_, Exchange::Okx);
+  EXPECT_EQ(decoded.side_, Side::Sell);
+  EXPECT_EQ(decoded.price_, 9'910'00000000LL);
+  EXPECT_EQ(decoded.quantity_, 1'200'000LL);
+  EXPECT_EQ(decoded.cumulative_quantity_, 1'400'000LL);
+  EXPECT_EQ(decoded.average_price_, 9'905'00000000LL);
+
+  // The following event is still reachable in timestamp order.
+  EXPECT_EQ(reader.peek_next_timestamp(), trade_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::TradeEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
+  reader.close();
+  std::filesystem::remove(path);
+}
+
+TEST(MultiFileBinaryReaderTest, TimestampMergeInterleavesIndependentlySortedFiles) {
+  const int64_t base = 1'700'000'000'000'000'000LL;
+  const auto a = write_capture("reflex_multi_merge_a.bin",
+                               {make_l1(base + 1'000, 1, 100, 101),
+                                make_l1(base + 3'000, 1, 100, 101)});
+  const auto b = write_capture("reflex_multi_merge_b.bin",
+                               {make_l1(base + 2'000, 2, 100, 101)});
+  const auto empty = write_capture("reflex_multi_merge_empty.bin", {});
+
+  MultiFileBinaryReader reader({a, b, empty}, /*merge_by_timestamp=*/true);
+  std::vector<int64_t> seen;
+  while (reader.has_more_data()) {
+    const int64_t peeked = reader.peek_next_timestamp();
+    const MessageSlot* slot = reader.read_next_message();
+    ASSERT_NE(slot, nullptr);
+    EXPECT_EQ(slot->as<L1UpdateEvent>().timestamp_ns_, peeked);
+    seen.push_back(peeked);
+  }
+  EXPECT_EQ(seen, (std::vector<int64_t>{base + 1'000, base + 2'000, base + 3'000}));
+  EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
+  EXPECT_EQ(reader.read_next_message(), nullptr);
+
+  std::filesystem::remove(a);
+  std::filesystem::remove(b);
+  std::filesystem::remove(empty);
 }
 
 TEST(BinarySplitterTest, SplitAndReadBackRoundTrip) {

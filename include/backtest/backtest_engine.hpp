@@ -2,6 +2,7 @@
 // include/backtest/backtest_engine.hpp
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -83,6 +84,46 @@ struct BackTestEngineConfig {
   int64_t strategy_to_exchange_latency_ns_ = 3'000'000;
   // One-way latency for the exchange -> strategy leg (market data and order responses).
   int64_t exchange_to_strategy_latency_ns_ = 3'000'000;
+  // Optional action-specific one-way latencies. Negative values fall back to
+  // the leg-wide value above.
+  int64_t order_entry_latency_ns_ = -1;
+  int64_t cancel_latency_ns_ = -1;
+  int64_t replace_latency_ns_ = -1;
+  int64_t response_latency_ns_ = -1;
+  // A venue-safe replay must name both the execution venue and instrument.
+  // When configured, non-matching market data never reaches the simulated
+  // exchange. fail_on_provenance_mismatch_ turns accidental mixed inputs into
+  // an immediate error instead of silently constructing a synthetic book.
+  Exchange trading_exchange_ = Exchange::Unknown;
+  int32_t trading_instrument_id_ = 0;
+  bool fail_on_provenance_mismatch_ = false;
+  // Optionally deliver a second (reference) venue's L1 to the strategy without
+  // it ever touching the simulated execution book.
+  bool deliver_reference_market_data_to_strategy_ = false;
+  bool merge_data_files_by_timestamp_ = false;
+  Exchange reference_exchange_ = Exchange::Unknown;
+  int32_t reference_instrument_id_ = 0;
+  // Market data before this timestamp primes the simulated execution book but
+  // is not delivered to the strategy. Strategy delivery and scored simulation
+  // time begin at the first event at or after the boundary.
+  int64_t window_start_ns_ = 0;
+  int64_t window_end_ns_ = 0;  // Stop ingesting market data after this timestamp when > 0
+};
+
+struct MarketDataProvenanceStats {
+  // Exchange enum values currently occupy [1, 4]; index zero is reserved for
+  // malformed/out-of-range values.
+  std::array<uint64_t, 5> seen_by_exchange{};
+  uint64_t accepted_execution_events{0};
+  uint64_t rejected_exchange_events{0};
+  uint64_t rejected_instrument_events{0};
+  uint64_t delivered_reference_events{0};
+
+  uint64_t seen(Exchange exchange) const noexcept {
+    const auto index = static_cast<std::size_t>(exchange);
+    return index < seen_by_exchange.size() ? seen_by_exchange[index]
+                                           : seen_by_exchange[0];
+  }
 };
 
 // Backtest results
@@ -105,6 +146,9 @@ class BackTestEngine : public ExchangeResponseHandler {
   void set_data_files(const std::vector<std::string>& files);
   void set_strategy(std::shared_ptr<reflex::Strategy> strategy);
   void set_exchange_simulator(std::shared_ptr<ExchangeSimulator> exchange);
+  // Opt-in: when set, timer deadlines become a fifth replay source. Runners
+  // that leave this unset retain the original four-source ordering exactly.
+  void set_timer_manager(std::shared_ptr<reflex::TimerManager> timer_manager);
 
   // Clock access
   std::shared_ptr<reflex::SimulationClock> get_clock() const { return clock_; }
@@ -119,6 +163,11 @@ class BackTestEngine : public ExchangeResponseHandler {
 
   // Results
   const BackTestResults& get_results() const { return results_; }
+  const MarketDataProvenanceStats& get_market_data_provenance_stats() const noexcept {
+    return provenance_stats_;
+  }
+  int64_t configured_outbound_latency_ns(MessageType type) const noexcept;
+  int64_t configured_response_latency_ns() const noexcept;
 
   // Current simulation time access
   int64_t get_current_time_ns() const;
@@ -139,6 +188,7 @@ class BackTestEngine : public ExchangeResponseHandler {
   bool has_more_data() const;
   int64_t get_next_market_data_time() const;
   void initialize_components();
+  void prime_exchange_state(const MessageSlot& event);
 
   // Configuration
   BackTestEngineConfig config_;
@@ -148,6 +198,7 @@ class BackTestEngine : public ExchangeResponseHandler {
   std::unique_ptr<MultiFileBinaryReader> data_reader_;
   std::shared_ptr<Strategy> strategy_;
   std::shared_ptr<ExchangeSimulator> exchange_simulator_;
+  std::shared_ptr<TimerManager> timer_manager_;
 
   // Clock (owned by engine)
   std::shared_ptr<SimulationClock> clock_;
@@ -157,12 +208,20 @@ class BackTestEngine : public ExchangeResponseHandler {
   EventRing<DelayedEvent> market_data_queue_{8192};
   EventRing<DelayedEvent> strategy_to_exchange_queue_{1024};
   EventRing<DelayedEvent> exchange_to_strategy_queue_{1024};
+  // The rings are FIFO but per-type latencies differ, so a later-queued event
+  // could otherwise carry an earlier delivery time — delivered late at its
+  // stale timestamp, rewinding the simulation clock. Each direction models one
+  // ordered connection: delivery times are clamped monotonic per queue.
+  int64_t last_outbound_delivery_ns_ = 0;   // strategy -> exchange
+  int64_t last_inbound_delivery_ns_ = 0;    // exchange -> strategy
 
   // Simulation state
   bool is_running_ = false;
+  bool data_window_exhausted_ = false;
 
   // Results tracking
   BackTestResults results_;
+  MarketDataProvenanceStats provenance_stats_;
   std::shared_ptr<spdlog::logger> logger_;
 };
 

@@ -172,7 +172,10 @@ std::vector<MessageSlot> race_tape() {
 TEST(BackTestEngineRaceTest, FillWinsWhenCancelIsStillInFlight) {
   // 1ms per leg: order rests at T0+2ms; cancel (sent T0+3.5ms) reaches the
   // exchange at T0+4.5ms — AFTER the print at T0+3ms. The fill must win and
-  // the late cancel must be rejected, never silently honored.
+  // the late cancel must never be honored. The venue answers OrderUnknown;
+  // order management classifies that reject as the expected lifecycle race
+  // (the strategy already saw the fill) and counts it instead of surfacing
+  // a cancel-rejected callback for a terminal order.
   BackTestEngineConfig cfg;
   cfg.strategy_to_exchange_latency_ns_ = 1'000'000;
   cfg.exchange_to_strategy_latency_ns_ = 1'000'000;
@@ -184,7 +187,11 @@ TEST(BackTestEngineRaceTest, FillWinsWhenCancelIsStillInFlight) {
   EXPECT_EQ(h.strategy->accepted, 1);
   EXPECT_EQ(h.strategy->filled, CodecUtils::encode_quantity(1.0));
   EXPECT_EQ(h.strategy->cancel_accepted, 0);
-  EXPECT_EQ(h.strategy->cancel_rejected, 1);
+  EXPECT_EQ(h.strategy->cancel_rejected, 0);
+  const auto& diag = h.om->request_correlation_diagnostics();
+  EXPECT_EQ(diag.terminal_fill_order_unknown_cancel_rejects, 1u);
+  EXPECT_EQ(diag.uncorrelated_cancel_responses, 0u);
+  EXPECT_EQ(diag.stale_cancel_responses, 0u);
 }
 
 TEST(BackTestEngineRaceTest, CancelWinsWhenItReachesTheExchangeFirst) {

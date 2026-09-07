@@ -167,6 +167,11 @@ bool BinarySplitter::process_input_file(const std::string& input_file, const std
                 instrument_id = event.instrument_id_;
                 break;
             }
+            case reflex::MessageType::LiquidationEvent: {
+                const auto& event = slot->as<LiquidationEvent>();
+                instrument_id = event.instrument_id_;
+                break;
+            }
             default:
                 // Skip unknown/unsupported message types
                 spdlog::debug("Skipping unsupported message type: {}",

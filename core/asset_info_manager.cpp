@@ -56,7 +56,7 @@ const AssetInfo* AssetInfoManager::create_asset_info(
     int32_t instrument_id, Exchange exchange, Instrument instrument,
     const char* exchange_symbol, const char* parquet_symbol,
     int64_t tick_increment, int64_t size_increment, int64_t min_order_size,
-    int64_t contract_size, int16_t taker_fee, int16_t maker_fee,
+    int64_t contract_size, int32_t taker_fee_ppb, int32_t maker_fee_ppb,
     SizeUnit size_unit) noexcept {
 
     if (static_cast<std::size_t>(storage_index_) >= asset_storage_.size()) {
@@ -67,7 +67,7 @@ const AssetInfo* AssetInfoManager::create_asset_info(
     asset_storage_[storage_index_] = AssetInfo(
         instrument_id, exchange, instrument, exchange_symbol, parquet_symbol,
         tick_increment, size_increment, min_order_size, contract_size,
-        taker_fee, maker_fee, size_unit
+        taker_fee_ppb, maker_fee_ppb, size_unit
     );
 
     const AssetInfo* asset_info = &asset_storage_[storage_index_++];
@@ -126,35 +126,35 @@ void AssetInfoManager::init_spot_instruments() noexcept {
 
     // BINANCE – values expressed in native decimals, converted with fp()
     create_asset_info(201, Exchange::Binance, btc_usdt, "BTCUSDT", "BTC/USDT",
-        fp(0.01),  fp(0.000001), fp(0.00001), 0,
+        fp(0.01), fp(0.00001), fp(0.00001), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     create_asset_info(202, Exchange::Binance, eth_usdt, "ETHUSDT", "ETH/USDT",
-        fp(0.01),  fp(0.0001),   fp(0.0001),  0,
+        fp(0.01), fp(0.0001), fp(0.0001), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     create_asset_info(203, Exchange::Binance, ltc_usdt, "LTCUSDT", "LTC/USDT",
-        fp(0.01),  fp(0.001),    fp(0.01),    0,
+        fp(0.01), fp(0.001), fp(0.001), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     create_asset_info(204, Exchange::Binance, sol_usdt, "SOLUSDT", "SOL/USDT",
-        fp(0.01),  fp(0.01),     fp(0.01),    0,
+        fp(0.01), fp(0.001), fp(0.001), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     create_asset_info(205, Exchange::Binance, ada_usdt, "ADAUSDT", "ADA/USDT",
-        fp(0.0001), fp(1.0),     fp(1.0),     0,
+        fp(0.0001), fp(0.1), fp(0.1), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     create_asset_info(209, Exchange::Binance, xrp_usdt, "XRPUSDT", "XRP/USDT",
-        fp(0.0001), fp(1.0),     fp(1.0),     0,
+        fp(0.0001), fp(0.1), fp(0.1), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     create_asset_info(210, Exchange::Binance, avax_usdt, "AVAXUSDT", "AVAX/USDT",
-        fp(0.01),  fp(0.01),     fp(0.01),    0,
+        fp(0.001), fp(0.01), fp(0.01), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     create_asset_info(211, Exchange::Binance, doge_usdt, "DOGEUSDT", "DOGE/USDT",
-        fp(0.00001), fp(1.0),     fp(1.0),     0,
+        fp(0.00001), fp(1.0), fp(1.0), fp(1.0),
         Fees::BINANCE_TAKER, Fees::BINANCE_MAKER, SizeUnit::ASSET);
 
     // OKX – spot

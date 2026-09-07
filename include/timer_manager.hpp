@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
@@ -91,6 +92,14 @@ public:
 
   uint64_t get_latest_time() const {
     return latest_time_;
+  }
+
+  // UINT64_MAX means no timer is pending. A replay engine can use this as an
+  // opt-in event source; tombstoned timers may surface once and are discarded
+  // by check_scheduled_timers().
+  [[nodiscard]] uint64_t next_trigger_time() const noexcept {
+    return heap_.empty() ? std::numeric_limits<uint64_t>::max()
+                         : heap_.front().next_trigger_time_;
   }
 
 private:

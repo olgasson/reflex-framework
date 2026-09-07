@@ -150,6 +150,8 @@ class OkxBlob : public BaseComponent {
   };
   std::vector<InstrumentCacheEntry> instrument_id_cache_;
 
+  int frames_this_pass_ = 0;  // honest work count for idle strategies
+
   std::vector<std::string> currency_pairs_;
   std::unique_ptr<SubscriptionQueue> subscription_queue_;
 

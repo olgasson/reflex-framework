@@ -30,6 +30,7 @@ class Strategy : public AlgoOrderManagementListener {
   virtual void on_mark_price(const MarkPriceEvent& /*event*/) {}
   virtual void on_funding_rate(const FundingRateEvent& /*event*/) {}
   virtual void on_open_interest(const OpenInterestEvent& /*event*/) {}
+  virtual void on_liquidation(const LiquidationEvent& /*event*/) {}
 
   // OM callbacks - PURE VIRTUAL (must be implemented)
   void on_accepted(const Order& /*order*/, const AcceptedEvent& event) override = 0;

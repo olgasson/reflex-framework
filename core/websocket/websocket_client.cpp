@@ -5,6 +5,7 @@
 #include <iostream>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -210,8 +211,11 @@ void WebsocketClient::disconnect(bool hard_reset, std::string_view reason) {
 
 void WebsocketClient::reset_transfer_state() {
   // Return queued TX frames to the pool and forget any partial RX message;
-  // both belong to the connection that just went away.
+  // both belong to the connection that just went away. A websocket session
+  // owns every queued frame: never carry partially sent subscriptions, their
+  // completion callbacks, or a pending ping into the next connection.
   while (!pending_q_.empty()) {
+    tx_pool_[pending_q_.front()].on_sent = {};
     free_stack_.push_back(pending_q_.front());
     pending_q_.pop_front();
   }
@@ -277,6 +281,16 @@ void WebsocketClient::service_ready_fds(const std::vector<struct pollfd>& fds) {
     if (fd.fd == socket_fd && fd.revents != 0) {
       struct lws_pollfd pfd = {fd.fd, fd.events, fd.revents};
       lws_service_fd(context_, &pfd);
+#if defined(__linux__)
+      // Re-arm QUICKACK after every receive: our delayed ACK (~40ms) stalls
+      // the PEER's Nagle'd small writes - observed as a constant ~40-50ms
+      // plateau on order acks that our own TCP_NODELAY cannot fix (it
+      // governs our writes, not theirs). QUICKACK is transient on Linux, so
+      // it must be reapplied.
+      const int quickack = 1;
+      setsockopt(socket_fd, IPPROTO_TCP, TCP_QUICKACK, &quickack,
+                 sizeof(quickack));
+#endif
       return; // Exit immediately after servicing our socket
     }
   }
@@ -293,7 +307,8 @@ void WebsocketClient::do_pending_work() {
   lws_callback_on_writable(wsi_);
 }
 
-bool WebsocketClient::send_message_immediate(const std::string& msg)
+bool WebsocketClient::send_message_immediate(const std::string& msg,
+                                             std::function<void()> on_sent)
 {
   if (!is_connected()) {
     logger_->warn("Cannot send – not connected");
@@ -307,6 +322,14 @@ bool WebsocketClient::send_message_immediate(const std::string& msg)
   }
 
   std::memcpy(p, msg.data(), msg.size());     // **single** copy
+  if (on_sent) {
+    for (auto& block : tx_pool_) {
+      if (block.buf.data() + LWS_PRE == p) {
+        block.on_sent = std::move(on_sent);
+        break;
+      }
+    }
+  }
   end_frame(p, msg.size());
   return true;
 }
@@ -391,6 +414,14 @@ static int lws_callback_impl(struct lws* wsi, enum lws_callback_reasons reason,
             break;
         }
 
+        case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER:
+            if (client) {
+                return client->append_handshake_headers(
+                    wsi, reinterpret_cast<unsigned char**>(in),
+                    *reinterpret_cast<unsigned char**>(in) + len);
+            }
+            break;
+
         case LWS_CALLBACK_CLIENT_RECEIVE:
             if (client) {
                 client->handle_client_receive(wsi, static_cast<const char*>(in), len);
@@ -432,12 +463,46 @@ static int lws_callback_impl(struct lws* wsi, enum lws_callback_reasons reason,
 
 
 void WebsocketClient::handle_client_established() {
+  // Nagle + delayed-ACK stalls burst-sent frames by ~40ms (observed as a
+  // constant ~40-50ms plateau on back-to-back order placements). Trading
+  // sockets always want immediate writes.
+  const int socket_fd = lws_get_socket_fd(wsi_);
+  if (socket_fd >= 0) {
+    const int enable = 1;
+    if (setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &enable,
+                   sizeof(enable)) != 0) {
+      logger_->warn("failed to set TCP_NODELAY on websocket fd {}",
+                    socket_fd);
+    }
+  }
+  char peer_address[128]{};
+  if (lws_get_peer_simple(wsi_, peer_address, sizeof(peer_address)) != nullptr &&
+      peer_address[0] != '\0') {
+    logger_->info("WebSocket peer address: {}", peer_address);
+  }
   set_state(ConnectionState::CONNECTED);
   // Reset ping / pong timers so we don't trigger an immediate timeout
   last_pong_time_nanos_ = nano_clock_.epoch_nanos();
   last_ping_time_nanos_ = nano_clock_.epoch_nanos();
   rx_buffer_.clear();
   rx_dropping_ = false;
+}
+
+void WebsocketClient::add_handshake_header(const std::string& name, const std::string& value) {
+  // lws_add_http_header_by_name wants the name with a trailing colon.
+  handshake_headers_.emplace_back(name + ":", value);
+}
+
+int WebsocketClient::append_handshake_headers(struct lws* wsi, unsigned char** p, unsigned char* end) {
+  for (const auto& [name, value] : handshake_headers_) {
+    if (lws_add_http_header_by_name(wsi, reinterpret_cast<const unsigned char*>(name.c_str()),
+                                    reinterpret_cast<const unsigned char*>(value.c_str()),
+                                    static_cast<int>(value.size()), p, end) != 0) {
+      logger_->error("Handshake header buffer exhausted adding {}", name);
+      return -1;
+    }
+  }
+  return 0;
 }
 
 void WebsocketClient::handle_client_receive(struct lws* wsi, const char* data, size_t len) {
@@ -503,6 +568,8 @@ void WebsocketClient::handle_client_writeable()
   TxBlock& blk = tx_pool_[idx];
 
   const int n = lws_write(wsi_, blk.buf.data() + LWS_PRE, blk.len, LWS_WRITE_TEXT);
+  auto on_sent = std::move(blk.on_sent);
+  blk.on_sent = {};
   free_stack_.push_back(idx);
 
   if (n < static_cast<int>(blk.len)) {
@@ -514,6 +581,8 @@ void WebsocketClient::handle_client_writeable()
     set_state(ConnectionState::ERROR, "lws_write short return");
     return;
   }
+
+  if (on_sent) on_sent();
 
   // Request another callback if more work pending or a partial is flushing
   if (!pending_q_.empty() || lws_partial_buffered(wsi_)) {
@@ -547,11 +616,16 @@ void WebsocketClient::send_ping_if_needed(uint64_t now_nanos) {
   last_ping_time_nanos_ = now_nanos;
 
   // OKX keepalive is the text "ping" / "pong" exchange; a ws control-frame
-  // ping is not honoured by the venue, so only the text ping is sent.
+  // ping is not honoured by the venue, so only the text ping is sent. Venues
+  // that reject unexpected text frames disable it via set_text_ping_enabled().
+  if (!text_ping_enabled_) return;
+
+  // Paths may contain short-lived credentials (for example listen keys), so
+  // connection logs must never echo the full URL - log the host only.
   if (send_message_immediate("ping")) {
-    logger_->info("WS text ping sent to {}", url_);
+    logger_->info("WS text ping sent to {}", host_);
   } else {
-    logger_->warn("WS text ping failed to send on {}", url_);
+    logger_->warn("WS text ping failed to send on {}", host_);
   }
 }
 
@@ -561,7 +635,7 @@ bool WebsocketClient::needs_poll() const {
 
 void WebsocketClient::handle_client_pong() {
   update_pong_timestamp();
-  logger_->info("WS-PONG (control frame) from {}", url_);
+  logger_->info("WS-PONG (control frame) from {}", host_);
 }
 
 bool WebsocketClient::is_pong_timed_out(uint64_t now) const {

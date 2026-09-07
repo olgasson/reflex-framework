@@ -5,12 +5,73 @@
 #include "logger_factory.hpp"
 #include "backtest/binary_reader.hpp"
 #include "backtest/exchange_simulator.hpp"
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <string_view>
 #include <utility>
 
 namespace reflex::backtest {
+namespace {
+
+// Every message struct shares the common header (type_ + 7 reserved bytes,
+// then timestamp_ns_ at offset 8), so the generic read is always valid.
+int64_t slot_timestamp_ns(const MessageSlot& slot) {
+  return slot.as<HeartbeatEvent>().timestamp_ns_;
+}
+
+Exchange slot_exchange(const MessageSlot& slot) {
+  switch (slot.get_type()) {
+    case MessageType::L1UpdateEvent:
+      return slot.as<L1UpdateEvent>().exchange_;
+    case MessageType::L2UpdateEvent:
+      return slot.as<L2UpdateEvent>().exchange_;
+    case MessageType::TradeEvent:
+      return slot.as<TradeEvent>().exchange_;
+    case MessageType::MarkPriceEvent:
+      return slot.as<MarkPriceEvent>().exchange_;
+    case MessageType::FundingRateEvent:
+      return slot.as<FundingRateEvent>().exchange_;
+    case MessageType::OpenInterestEvent:
+      return slot.as<OpenInterestEvent>().exchange_;
+    case MessageType::LiquidationEvent:
+      return slot.as<LiquidationEvent>().exchange_;
+    default:
+      return Exchange::Unknown;
+  }
+}
+
+int32_t slot_instrument_id(const MessageSlot& slot) {
+  switch (slot.get_type()) {
+    case MessageType::L1UpdateEvent:
+      return slot.as<L1UpdateEvent>().instrument_id_;
+    case MessageType::L2UpdateEvent:
+      return slot.as<L2UpdateEvent>().instrument_id_;
+    case MessageType::TradeEvent:
+      return slot.as<TradeEvent>().instrument_id_;
+    case MessageType::MarkPriceEvent:
+      return slot.as<MarkPriceEvent>().instrument_id_;
+    case MessageType::FundingRateEvent:
+      return slot.as<FundingRateEvent>().instrument_id_;
+    case MessageType::OpenInterestEvent:
+      return slot.as<OpenInterestEvent>().instrument_id_;
+    case MessageType::LiquidationEvent:
+      return slot.as<LiquidationEvent>().instrument_id_;
+    default:
+      return 0;
+  }
+}
+
+const char* exchange_name(Exchange exchange) noexcept {
+  switch (exchange) {
+    case Exchange::Binance: return "binance";
+    case Exchange::BinanceDerivatives: return "binance_derivatives";
+    case Exchange::Okx: return "okx";
+    default: return "unknown";
+  }
+}
+
+}  // namespace
 
 void BackTestResults::print_summary() const {
   double elapsed_seconds = get_elapsed_seconds();
@@ -47,6 +108,10 @@ void BackTestEngine::set_exchange_simulator(std::shared_ptr<ExchangeSimulator> e
   exchange_simulator_ = std::move(exchange);
 }
 
+void BackTestEngine::set_timer_manager(std::shared_ptr<reflex::TimerManager> timer_manager) {
+  timer_manager_ = std::move(timer_manager);
+}
+
 
 void BackTestEngine::run_backtest() {
   if (data_files_.empty()) {
@@ -57,17 +122,13 @@ void BackTestEngine::run_backtest() {
     throw std::runtime_error("No strategy specified");
   }
 
-  // logger_->info("=== STARTING BACKTEST ===");
-  // logger_->info("Loading {} data files", data_files_.size());
-
   // Initialize components
   initialize_components();
 
   // Start timing
   results_.start_time_ = std::chrono::steady_clock::now();
   is_running_ = true;
-
-  // logger_->info("Processing market data...");
+  data_window_exhausted_ = false;
 
   while (should_continue()) {
     // k-way merge over the file stream + 3 latency queues. Strict-< comparisons
@@ -114,13 +175,42 @@ void BackTestEngine::run_backtest() {
       source_to_process = 3;  // Exchange → Strategy
     }
 
+    // Timers are opt-in and checked last with strict '<'. Market data and the
+    // latency queues therefore win an equal-timestamp tie and may refresh
+    // state before a timer deadline is evaluated.
+    if (timer_manager_) {
+      const uint64_t timer_time = timer_manager_->next_trigger_time();
+      if (timer_time <= static_cast<uint64_t>(INT64_MAX) &&
+          static_cast<int64_t>(timer_time) < earliest_time) {
+        earliest_time = static_cast<int64_t>(timer_time);
+        source_to_process = 4;  // Timer
+      }
+    }
+
     advance_simulation_time(earliest_time);
 
     // Process the earliest event
     switch (source_to_process) {
-      case 0:
-        process_file_data_event(data_reader_->read_next_message());
+      case 0: {
+        const MessageSlot* slot = data_reader_->read_next_message();
+        if (!slot) {
+          // has_more_data()/peek promised a message the reader could not
+          // deliver; never dereference — just drop the tick.
+          logger_->warn("File data source selected but reader returned no message");
+          break;
+        }
+        const int64_t ts = slot_timestamp_ns(*slot);
+        if (config_.window_start_ns_ > 0 && ts < config_.window_start_ns_) {
+          prime_exchange_state(*slot);
+          break;
+        }
+        if (config_.window_end_ns_ > 0 && ts > config_.window_end_ns_) {
+          data_window_exhausted_ = true;
+          break;
+        }
+        process_file_data_event(slot);
         break;
+      }
       case 1:
         process_strategy_market_data_event(market_data_queue_.front());
         market_data_queue_.pop();
@@ -132,6 +222,9 @@ void BackTestEngine::run_backtest() {
       case 3:
         process_exchange_response_event(exchange_to_strategy_queue_.front());
         exchange_to_strategy_queue_.pop();
+        break;
+      case 4:
+        timer_manager_->check_scheduled_timers(static_cast<uint64_t>(earliest_time));
         break;
       default:
         logger_->warn("No events to process for invalid source");
@@ -146,11 +239,59 @@ void BackTestEngine::run_backtest() {
 
 void BackTestEngine::process_file_data_event(const MessageSlot* slot) {
   if (!slot) {
-    // has_more_data()/peek promised a message the reader could not deliver;
-    // never dereference — just drop the tick.
     logger_->warn("File data source selected but reader returned no message");
     return;
   }
+
+  const Exchange source_exchange = slot_exchange(*slot);
+  const int32_t source_instrument = slot_instrument_id(*slot);
+  const auto exchange_index = static_cast<std::size_t>(source_exchange);
+  if (exchange_index < provenance_stats_.seen_by_exchange.size()) {
+    ++provenance_stats_.seen_by_exchange[exchange_index];
+  } else {
+    ++provenance_stats_.seen_by_exchange[0];
+  }
+
+  const bool exchange_matches =
+      config_.trading_exchange_ == Exchange::Unknown ||
+      source_exchange == config_.trading_exchange_;
+  const bool instrument_matches =
+      config_.trading_instrument_id_ <= 0 ||
+      source_instrument == config_.trading_instrument_id_;
+  const bool reference_matches =
+      config_.deliver_reference_market_data_to_strategy_ &&
+      config_.reference_exchange_ != Exchange::Unknown &&
+      config_.reference_instrument_id_ > 0 &&
+      source_exchange == config_.reference_exchange_ &&
+      source_instrument == config_.reference_instrument_id_;
+  if (!exchange_matches || !instrument_matches) {
+    if (reference_matches) {
+      if (slot->get_type() == MessageType::L1UpdateEvent) {
+        ++provenance_stats_.delivered_reference_events;
+        schedule_message_for_strategy(*slot);
+      }
+      return;
+    }
+    if (!exchange_matches) ++provenance_stats_.rejected_exchange_events;
+    if (!instrument_matches) ++provenance_stats_.rejected_instrument_events;
+    if (config_.fail_on_provenance_mismatch_) {
+      throw std::runtime_error(
+          std::string{"Market-data provenance mismatch: expected exchange="} +
+          exchange_name(config_.trading_exchange_) + " instrument=" +
+          std::to_string(config_.trading_instrument_id_) + " but received exchange=" +
+          exchange_name(source_exchange) + " instrument=" +
+          std::to_string(source_instrument));
+    }
+    if (config_.deliver_reference_market_data_to_strategy_ &&
+        config_.reference_exchange_ == Exchange::Unknown &&
+        config_.reference_instrument_id_ <= 0) {
+      ++provenance_stats_.delivered_reference_events;
+      schedule_message_for_strategy(*slot);
+    }
+    return;
+  }
+  ++provenance_stats_.accepted_execution_events;
+
   switch (slot->get_type()) {
     case MessageType::L1UpdateEvent: {
       const auto& event = slot->as<L1UpdateEvent>();
@@ -190,10 +331,41 @@ void BackTestEngine::process_file_data_event(const MessageSlot* slot) {
     }
     case MessageType::MarkPriceEvent:
     case MessageType::FundingRateEvent:
-    case MessageType::OpenInterestEvent: {
+    case MessageType::OpenInterestEvent:
+    case MessageType::LiquidationEvent: {
+      // Auxiliary market data: strategy-only, delivered with the usual
+      // exchange->strategy latency.
       schedule_message_for_strategy(*slot);
       break;
     }
+    default:
+      break;
+  }
+}
+
+void BackTestEngine::prime_exchange_state(const MessageSlot& slot) {
+  if (!exchange_simulator_) return;
+
+  const Exchange source_exchange = slot_exchange(slot);
+  const int32_t source_instrument = slot_instrument_id(slot);
+  const bool exchange_matches =
+      config_.trading_exchange_ == Exchange::Unknown ||
+      source_exchange == config_.trading_exchange_;
+  const bool instrument_matches =
+      config_.trading_instrument_id_ <= 0 ||
+      source_instrument == config_.trading_instrument_id_;
+  if (!exchange_matches || !instrument_matches) return;
+
+  switch (slot.get_type()) {
+    case MessageType::L1UpdateEvent:
+      exchange_simulator_->process_l1_update(slot.as<L1UpdateEvent>());
+      break;
+    case MessageType::L2UpdateEvent:
+      exchange_simulator_->process_l2_update(slot.as<L2UpdateEvent>());
+      break;
+    case MessageType::TradeEvent:
+      exchange_simulator_->process_trade_event(slot.as<TradeEvent>());
+      break;
     default:
       break;
   }
@@ -223,6 +395,9 @@ void BackTestEngine::process_strategy_market_data_event(const DelayedEvent& even
       break;
     case MessageType::OpenInterestEvent:
       strategy_->on_open_interest(slot.as<OpenInterestEvent>());
+      break;
+    case MessageType::LiquidationEvent:
+      strategy_->on_liquidation(slot.as<LiquidationEvent>());
       break;
     default:
       logger_->warn("Unexpected market data type in strategy delivery");
@@ -315,8 +490,8 @@ void BackTestEngine::process_exchange_response_event(const DelayedEvent& event) 
 
 void BackTestEngine::initialize_components() {
   // Create data reader
-  data_reader_ = std::make_unique<MultiFileBinaryReader>(data_files_);
-  // logger_->info("Components initialized");
+  data_reader_ = std::make_unique<MultiFileBinaryReader>(
+      data_files_, config_.merge_data_files_by_timestamp_);
 }
 
 int64_t BackTestEngine::get_current_time_ns() const {
@@ -324,17 +499,57 @@ int64_t BackTestEngine::get_current_time_ns() const {
 }
 
 void BackTestEngine::add_strategy_order_event(const MessageSlot& message_slot) {
-  // Apply the strategy->exchange leg latency and add to the order queue.
-  // Written straight into the ring slot — one copy of the 64-byte payload.
+  // Apply the action-specific one-way latency and add to the strategy→exchange
+  // queue. Written straight into the ring slot — one copy of the 64-byte
+  // payload. Delivery is clamped monotonic within the queue: one ordered
+  // connection, so a fast cancel queued behind a slower new still arrives
+  // after it.
+  const int64_t latency_ns = configured_outbound_latency_ns(message_slot.get_type());
   DelayedEvent& delayed = strategy_to_exchange_queue_.emplace_back();
-  delayed.delivery_timestamp_ns_ = clock_->epoch_nanos() + config_.strategy_to_exchange_latency_ns_;
+  delayed.delivery_timestamp_ns_ =
+      std::max(clock_->epoch_nanos() + latency_ns, last_outbound_delivery_ns_);
+  last_outbound_delivery_ns_ = delayed.delivery_timestamp_ns_;
   delayed.event_data_ = message_slot;
 }
 
+int64_t BackTestEngine::configured_outbound_latency_ns(MessageType type) const noexcept {
+  int64_t latency_ns = config_.strategy_to_exchange_latency_ns_;
+  switch (type) {
+    case MessageType::Pending:
+      if (config_.order_entry_latency_ns_ >= 0) {
+        latency_ns = config_.order_entry_latency_ns_;
+      }
+      break;
+    case MessageType::PendingCancel:
+      if (config_.cancel_latency_ns_ >= 0) {
+        latency_ns = config_.cancel_latency_ns_;
+      }
+      break;
+    case MessageType::PendingReplace:
+      if (config_.replace_latency_ns_ >= 0) {
+        latency_ns = config_.replace_latency_ns_;
+      }
+      break;
+    default:
+      break;
+  }
+  return latency_ns;
+}
+
+int64_t BackTestEngine::configured_response_latency_ns() const noexcept {
+  return config_.response_latency_ns_ >= 0 ? config_.response_latency_ns_
+                                           : config_.exchange_to_strategy_latency_ns_;
+}
+
 void BackTestEngine::on_exchange_response(const MessageSlot& response_event) {
-  // Order responses travel the exchange->strategy leg.
+  // Order responses travel the exchange->strategy leg, with their own one-way
+  // latency when configured. Clamped monotonic within the queue (ordered
+  // connection semantics).
+  const int64_t latency_ns = configured_response_latency_ns();
   DelayedEvent& delayed = exchange_to_strategy_queue_.emplace_back();
-  delayed.delivery_timestamp_ns_ = clock_->epoch_nanos() + config_.exchange_to_strategy_latency_ns_;
+  delayed.delivery_timestamp_ns_ =
+      std::max(clock_->epoch_nanos() + latency_ns, last_inbound_delivery_ns_);
+  last_inbound_delivery_ns_ = delayed.delivery_timestamp_ns_;
   delayed.event_data_ = response_event;
 }
 
@@ -351,7 +566,16 @@ void BackTestEngine::schedule_message_for_strategy(const MessageSlot& event) {
 
 void BackTestEngine::advance_simulation_time(int64_t new_time_ns) {
   if (clock_) {
+    // Defense in depth: the delivery-time clamps keep every queue monotonic
+    // and out-of-order capture files abort the run, but simulation time itself
+    // must never rewind either.
+    new_time_ns = std::max(new_time_ns, clock_->epoch_nanos());
     clock_->set_time(new_time_ns);
+
+    // Pre-window priming does not count as scored simulation time.
+    if (config_.window_start_ns_ > 0 && new_time_ns < config_.window_start_ns_) {
+      return;
+    }
 
     // Track simulation time range
     if (results_.simulation_start_time_ns_ == 0) {
@@ -366,7 +590,9 @@ bool BackTestEngine::should_continue() const {
                          !strategy_to_exchange_queue_.empty() || !market_data_queue_.empty());
 }
 
-bool BackTestEngine::has_more_data() const { return data_reader_ && data_reader_->has_more_data(); }
+bool BackTestEngine::has_more_data() const {
+  return !data_window_exhausted_ && data_reader_ && data_reader_->has_more_data();
+}
 
 int64_t BackTestEngine::get_next_market_data_time() const {
   return data_reader_ ? data_reader_->peek_next_timestamp() : INT64_MAX;

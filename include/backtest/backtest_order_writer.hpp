@@ -12,7 +12,7 @@ public:
   explicit BacktestOrderWriter(BackTestEngine* engine);
 
   void send_pending(const Order& order) override;
-  void send_pending_cancel(const Order& order) override;
+  void send_pending_cancel(const Order& order, CancelPriority priority) override;
   void send_pending_replace(const Order& order) override;
 
 private:

@@ -68,8 +68,8 @@ struct AssetInfo {
     int64_t min_order_size_;    // minimum order size in nano units
     int64_t contract_size_;     // contract size in nano units
 
-    int16_t taker_fee_bps_;          // taker fee in basis points
-    int16_t maker_fee_bps_;          // maker fee in basis points
+    int32_t taker_fee_ppb_;          // taker fee, parts-per-billion of notional (1 bps = 100,000 ppb)
+    int32_t maker_fee_ppb_;          // maker fee in ppb; NEGATIVE = rebate
     SizeUnit size_unit_;
 
     // Pre-computed string views for zero-allocation lookups
@@ -81,18 +81,18 @@ struct AssetInfo {
         : instrument_id_(0), exchange_(Exchange::Binance),
           instrument_(InstrumentType::SPOT, Currency::BTC, Currency::USD),
           tick_increment_(0), size_increment_(0), min_order_size_(0),
-          contract_size_(0), taker_fee_bps_(0), maker_fee_bps_(0),
+          contract_size_(0), taker_fee_ppb_(0), maker_fee_ppb_(0),
           size_unit_(SizeUnit::ASSET), exchange_symbol_(nullptr), parquet_symbol_(nullptr) {}
 
     constexpr AssetInfo(const int32_t id, Exchange exch, const Instrument inst,
                        const char* ex_symbol, const char* pq_symbol,
                        int64_t tick_inc, int64_t size_inc, int64_t min_size,
-                       int64_t contract_size, int16_t taker_fee, int16_t maker_fee,
+                       int64_t contract_size, int32_t taker_fee_ppb, int32_t maker_fee_ppb,
                        SizeUnit unit)
         : instrument_id_(id), exchange_(exch), instrument_(inst),
           tick_increment_(tick_inc), size_increment_(size_inc),
           min_order_size_(min_size), contract_size_(contract_size),
-          taker_fee_bps_(taker_fee), maker_fee_bps_(maker_fee), size_unit_(unit),
+          taker_fee_ppb_(taker_fee_ppb), maker_fee_ppb_(maker_fee_ppb), size_unit_(unit),
           exchange_symbol_(ex_symbol), parquet_symbol_(pq_symbol) {}
 
     static constexpr double kFixed = 1e-8;
@@ -193,8 +193,8 @@ public:
                                              Instrument instrument, const char* exchange_symbol,
                                              const char* parquet_symbol, int64_t tick_increment,
                                              int64_t size_increment, int64_t min_order_size,
-                                             int64_t contract_size, int16_t taker_fee,
-                                             int16_t maker_fee, SizeUnit size_unit) noexcept;
+                                             int64_t contract_size, int32_t taker_fee_ppb,
+                                             int32_t maker_fee_ppb, SizeUnit size_unit) noexcept;
 
     static constexpr int64_t make_exchange_symbol_key(Exchange exchange, uint32_t symbol_hash) noexcept;
     static constexpr int64_t make_exchange_instrument_key(Exchange exchange, uint32_t instrument_hash) noexcept;
@@ -203,14 +203,16 @@ public:
     static void init_spot_instruments() noexcept;
     static void init_future_instruments() noexcept;
 
-    // Fee constants
+    // Fee constants in PPB of notional (1 bps = 100,000 ppb). A NEGATIVE maker
+    // fee is a rebate. Venue fee schedules are tiered and change over time;
+    // these are base-tier defaults, override per backtest where needed.
     struct Fees {
-        static constexpr int16_t BINANCE_TAKER = 10;
-        static constexpr int16_t BINANCE_MAKER = 10;
-        static constexpr int16_t BINANCE_DERIVATIVES_TAKER = 4;
-        static constexpr int16_t BINANCE_DERIVATIVES_MAKER = 2;
-        static constexpr int16_t OKX_TAKER = 5;   // OKX USDT-perp base taker = 0.05% (was 20 = wrong)
-        static constexpr int16_t OKX_MAKER = 0;    // base is 2bps; 0 ~= mid-VIP target tier
+        static constexpr int32_t BINANCE_TAKER = 1'000'000;             // 10 bps spot taker
+        static constexpr int32_t BINANCE_MAKER = 1'000'000;             // 10 bps spot maker
+        static constexpr int32_t BINANCE_DERIVATIVES_TAKER = 400'000;   // 4 bps
+        static constexpr int32_t BINANCE_DERIVATIVES_MAKER = 200'000;   // 2 bps
+        static constexpr int32_t OKX_TAKER = 500'000;   // OKX USDT-perp base taker = 0.05% (was 20 bps = wrong)
+        static constexpr int32_t OKX_MAKER = 0;         // base is 2 bps; 0 ~= mid-VIP target tier
     };
 };
 
