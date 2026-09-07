@@ -54,6 +54,8 @@ TEST_F(CodecUtilsTest, EncodePriceStringBasicValues) {
     EXPECT_EQ(CodecUtils::encode_price("0.0"), 0LL);
     EXPECT_EQ(CodecUtils::encode_price("100.0"), 10000000000LL);
     EXPECT_EQ(CodecUtils::encode_price("0.12345678"), 12345678LL);
+    EXPECT_EQ(CodecUtils::encode_price("-0.00038"), -38000LL);
+    EXPECT_EQ(CodecUtils::encode_price("+0.00038"), 38000LL);
 }
 
 TEST_F(CodecUtilsTest, EncodePriceStringIntegerValues) {

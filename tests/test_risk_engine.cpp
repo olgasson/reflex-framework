@@ -27,8 +27,8 @@ protected:
     ASSERT_NE(ai_, nullptr);
 
     // Fee rates (bps -> fraction). Adjust field names if yours differ.
-    maker_fee_rate_ = static_cast<double>(ai_->maker_fee_bps_) / 10'000.0;
-    taker_fee_rate_ = static_cast<double>(ai_->taker_fee_bps_) / 10'000.0;
+    maker_fee_rate_ = static_cast<double>(ai_->maker_fee_ppb_) / 1e9;
+    taker_fee_rate_ = static_cast<double>(ai_->taker_fee_ppb_) / 1e9;
 
     // Contract size in base units (BTC) as double (ai_->contract_size_ is fp8)
     contract_base_ = CodecUtils::to_double(static_cast<int64_t>(ai_->contract_size_));
@@ -43,6 +43,31 @@ protected:
   double contract_base_{0.0};
   std::unique_ptr<RiskEngine> re_;
 };
+
+TEST_F(RiskEngineTest, ExactSignedExchangeFeeOverridesModeledTierFee) {
+  re_->set_fees(10.0, 20.0);
+  re_->on_fill(RiskEngine::Fill{
+      .side = Side::Buy,
+      .qty_contracts = 2.0,
+      .px = 60'000.0,
+      .taker = false,
+      .ts_ns = 1,
+      .fee_quote = 0.12345678,
+      .fee_quote_valid = true,
+  });
+  expect_near(re_->fees_usd(), 0.12345678);
+
+  re_->on_fill(RiskEngine::Fill{
+      .side = Side::Sell,
+      .qty_contracts = 1.0,
+      .px = 60'100.0,
+      .taker = true,
+      .ts_ns = 2,
+      .fee_quote = -0.01,
+      .fee_quote_valid = true,
+  });
+  expect_near(re_->fees_usd(), 0.11345678);
+}
 
 // --- Basic long then partial sell (FIFO), fees (maker on buy, taker on sell) ---
 TEST_F(RiskEngineTest, LongThenPartialSellFifoRealizedAndFees) {
@@ -253,6 +278,50 @@ TEST_F(RiskEngineTest, AverageEntryShortAccumulation) {
   expect_near(M.avg_entry_quote, avg);
 }
 
+TEST_F(RiskEngineTest, SameDirectionFillRefreshesUnrealizedAtExistingMark) {
+  re_->set_fees(0.0, 0.0);
+  re_->on_mark_price(100.0);
+  re_->on_fill(RiskEngine::Fill{Side::Buy, 1.0, 90.0, false, 1});
+  expect_near(re_->snapshot().unrealized_pnl_quote, 10.0 * contract_base_);
+
+  re_->on_fill(RiskEngine::Fill{Side::Buy, 1.0, 110.0, false, 2});
+
+  expect_near(re_->snapshot().avg_entry_quote, 100.0);
+  expect_near(re_->snapshot().unrealized_pnl_quote, 0.0);
+  EXPECT_TRUE(re_->pnl_attribution().closes());
+}
+
+TEST_F(RiskEngineTest, PathAttributionClosesToAuthoritativeFifoTotal) {
+  re_->set_fees(0.0, 0.0);
+  re_->on_mark_price(100.0);
+  re_->on_fill(RiskEngine::Fill{Side::Buy, 2.0, 99.0, false, 1});
+  re_->on_mark_price(105.0);
+  re_->on_fill(RiskEngine::Fill{Side::Sell, 1.0, 106.0, false, 2});
+  re_->on_mark_price(103.0);
+  re_->on_funding_payment(0.25);
+
+  const auto attribution = re_->pnl_attribution();
+  expect_near(attribution.execution_edge_quote, 3.0 * contract_base_);
+  expect_near(attribution.inventory_carry_quote, 8.0 * contract_base_);
+  expect_near(attribution.funding_pnl_quote, 0.25);
+  expect_near(attribution.attributed_total_quote,
+              11.0 * contract_base_ + 0.25);
+  expect_near(attribution.fifo_total_quote, attribution.attributed_total_quote);
+  expect_near(attribution.identity_residual_quote, 0.0);
+  EXPECT_TRUE(attribution.valid);
+  EXPECT_TRUE(attribution.closes());
+}
+
+TEST_F(RiskEngineTest, FillBeforeFirstMarkInvalidatesPathAttribution) {
+  re_->on_fill(RiskEngine::Fill{Side::Buy, 1.0, 100.0, false, 1});
+  re_->on_mark_price(101.0);
+
+  const auto attribution = re_->pnl_attribution();
+  EXPECT_EQ(attribution.fills_before_first_mark, 1U);
+  EXPECT_FALSE(attribution.valid);
+  EXPECT_FALSE(attribution.closes());
+}
+
 // --- diag_string smoke test (doesn't assert exact string, just non-empty & contains pieces) ---
 TEST_F(RiskEngineTest, DiagStringSmoke) {
   re_->reset();
@@ -266,4 +335,37 @@ TEST_F(RiskEngineTest, DiagStringSmoke) {
   EXPECT_NE(d.find("RPnL="), std::string::npos);
   EXPECT_NE(d.find("UPnL="), std::string::npos);
   EXPECT_NE(d.find("fees="), std::string::npos);
+}
+
+TEST(RiskEngineSpotTest, TreatsSpotQuantityAsBaseAssetUnits) {
+  AssetInfoManager::initialize();
+  RiskEngine risk(301);
+  EXPECT_DOUBLE_EQ(risk.contract_value_base(), 1.0);
+
+  risk.on_fill(RiskEngine::Fill{Side::Buy, 0.001, 60'000.0, false, 1});
+  EXPECT_NEAR(risk.snapshot().position_base, 0.001, 1e-12);
+}
+
+TEST(RiskEngineFeeNormalizationTest, RepricesMakerNotionalAtAssumedRate) {
+  // fee_normalized_pnl_quote backs out actual booked fees, re-charges maker
+  // notional at the assumed rate (negative = rebate), and carries taker fees
+  // over unchanged — the "what would this PnL be under another fee tier" view.
+  AssetInfoManager::initialize();
+  RiskEngine risk(301);  // spot: contract value 1.0, base units
+
+  // Maker buy $60,000 notional with an exact exchange fee of +2 bps ($12).
+  risk.on_fill(RiskEngine::Fill{Side::Buy, 1.0, 60'000.0, false, 1, 12.0,
+                                true});
+  // Taker sell same notional, exact fee $30 — must carry over unchanged.
+  risk.on_fill(RiskEngine::Fill{Side::Sell, 1.0, 60'000.0, true, 2, 30.0,
+                                true});
+
+  const double actual = risk.total_pnl_quote();
+  // At a -0.1 bps maker rebate: maker leg earns 60'000 * 1e-5 = $0.60
+  // instead of paying $12 -> normalized PnL is $12.60 better; the $30
+  // taker fee stays.
+  const double normalized = risk.fee_normalized_pnl_quote(-0.10 / 10'000.0);
+  EXPECT_NEAR(normalized - actual, 12.0 + 0.60, 1e-9);
+  EXPECT_NEAR(risk.maker_notional_usd(), 60'000.0, 1e-9);
+  EXPECT_NEAR(risk.taker_fees_usd(), 30.0, 1e-9);
 }

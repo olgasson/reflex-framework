@@ -50,6 +50,8 @@ public:
         return slot->as<reflex::FundingRateEvent>().timestamp_ns_;
       case reflex::MessageType::OpenInterestEvent:
         return slot->as<reflex::OpenInterestEvent>().timestamp_ns_;
+      case reflex::MessageType::LiquidationEvent:
+        return slot->as<reflex::LiquidationEvent>().timestamp_ns_;
       default:
         // Every message struct shares the common header (type_ + 7 reserved bytes,
         // then timestamp_ns_ at offset 8) — read it generically. Returning 0 here
@@ -87,7 +89,12 @@ private:
 // Multi-file reader that lazily mmaps one chunk at a time
 class MultiFileBinaryReader {
 public:
-  explicit MultiFileBinaryReader(std::vector<std::string> file_paths);
+  // merge_by_timestamp=false replays the files back to back in the given
+  // order. merge_by_timestamp=true keeps every file open and always hands out
+  // the earliest pending event across them (a k-way merge of independently
+  // sorted captures, e.g. paired venues).
+  explicit MultiFileBinaryReader(std::vector<std::string> file_paths,
+                                 bool merge_by_timestamp = false);
 
   const MessageSlot* read_next_message();
 
@@ -107,6 +114,8 @@ private:
   void advance_to_next_file();
 
   std::vector<std::string> file_paths_;
+  bool merge_by_timestamp_{false};
+  std::vector<std::unique_ptr<BinaryReader>> merged_readers_;
   size_t current_reader_index_ = 0;
   std::unique_ptr<BinaryReader> current_reader_;
   mutable bool total_messages_cached_{false};

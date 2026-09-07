@@ -45,8 +45,11 @@ namespace {
 constexpr int32_t kInstrumentId = 10301;  // BTC-USDT-SWAP
 constexpr int64_t kTick = 10'000'000;     // 0.1 USD in fixed-point 1e8
 
-// Write a synthetic capture: a mean-reverting tick-grid mid with L1 quotes and
-// trade prints hitting alternating sides. ~10 events per millisecond.
+// Write a synthetic capture: a mean-reverting tick-grid mid with L1 quotes,
+// a small L2 depth snapshot whenever the touch moves, and trade prints hitting
+// alternating sides. ~10 events per millisecond. The depth matters: the
+// simulator refuses to rest an order behind the touch on an L1-only book,
+// because it could not know how much queue is ahead of it.
 std::string write_synthetic_tape(uint64_t num_steps) {
   const std::string path =
       (std::filesystem::temp_directory_path() / "reflex_example_tape.bin").string();
@@ -79,15 +82,44 @@ std::string write_synthetic_tape(uint64_t num_steps) {
   int64_t bid = anchor;
 
   MessageSlot slot;
+  constexpr int kDepthLevels = 6;  // per side, two levels per L2 message
+  // Snapshot both sides of the book as a batch of L2 messages: touch shows
+  // 5 contracts, every deeper level 10.
+  const auto write_depth_snapshot = [&](int64_t ts, int64_t bid_px, int64_t ask_px) {
+    for (int side = 0; side < 2; ++side) {
+      for (int lvl = 0; lvl < kDepthLevels; lvl += 2) {
+        auto* e = new (slot.raw_data()) L2UpdateEvent();
+        e->timestamp_ns_ = ts;
+        e->instrument_id_ = kInstrumentId;
+        e->side_ = (side == 0) ? Side::Buy : Side::Sell;
+        e->num_levels_ = 2;
+        const int64_t dir = (side == 0) ? -1 : 1;
+        const int64_t base = (side == 0) ? bid_px : ask_px;
+        e->price_1_ = base + dir * kTick * lvl;
+        e->size_1_ = (lvl == 0) ? 5'00000000 : 10'00000000;
+        e->price_2_ = base + dir * kTick * (lvl + 1);
+        e->size_2_ = 10'00000000;
+        e->snapshot_ = BooleanEnum::TRUE;
+        e->is_batch_message_ = BooleanEnum::TRUE;
+        e->is_last_batch_ =
+            (side == 1 && lvl + 2 >= kDepthLevels) ? BooleanEnum::TRUE : BooleanEnum::FALSE;
+        write_or_die(slot.raw_data(), sizeof(MessageSlot));
+      }
+    }
+  };
+
   for (uint64_t i = 0; i < num_steps; ++i) {
     const int64_t ts = base_ts + static_cast<int64_t>(i) * 100'000;  // 100us apart
 
     // Mean-reverting random walk on the tick grid.
     const int p = coin(rng);
     const int64_t drift = (bid > anchor) ? -1 : (bid < anchor ? 1 : 0);
+    const int64_t prev_bid = bid;
     if (p < 20) bid += kTick * ((p < 10) ? 1 : -1);
     else if (p < 25) bid += kTick * drift;
     const int64_t ask = bid + kTick;
+
+    if (i == 0 || bid != prev_bid) write_depth_snapshot(ts, bid, ask);
 
     {
       auto* e = new (slot.raw_data()) L1UpdateEvent();
@@ -154,6 +186,9 @@ int main(int argc, char** argv) {
 
   auto exchange = std::make_shared<ExchangeSimulator>(clock, engine.get());
   exchange->set_queue_model(ExchangeSimulator::QueueModel::Pessimistic);
+  // The L1 stream is the real-time one on most venues (depth is sampled), so
+  // let touch observations drive queue accounting too.
+  exchange->set_queue_accounting_on_l1(true);
   engine->set_exchange_simulator(exchange);
 
   const auto t0 = std::chrono::steady_clock::now();

@@ -93,9 +93,9 @@ class MessageSlotReader final : public RingBufferReader<MessageSlot> {
 public:
     using MessageTypeHandler = std::function<void(const MessageSlot&)>;
 
-    // MessageType is a dense enum (1..19); 32 leaves headroom for new types.
+    // MessageType is a dense enum (1..24); 32 leaves headroom for new types.
     static constexpr std::size_t kMaxMessageTypes = 32;
-    static_assert(static_cast<std::size_t>(MessageType::OpenInterestEvent) < kMaxMessageTypes,
+    static_assert(static_cast<std::size_t>(MessageType::LiquidationEvent) < kMaxMessageTypes,
                   "kMaxMessageTypes must cover every MessageType value");
 
     MessageSlotReader(

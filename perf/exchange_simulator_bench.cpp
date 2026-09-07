@@ -80,8 +80,9 @@ class CountingHandler final : public ExchangeResponseHandler {
 };
 
 constexpr int32_t kInstr = 10301;        // BTC-USDT-SWAP
-constexpr int64_t kBestBid = 1'000'000;  // integer ticks; wide spread so post-only never crosses
-constexpr int64_t kBestAsk = 1'000'100;
+constexpr int64_t kTick = 10'000'000;                     // 0.1 USD in fixed-point 1e8
+constexpr int64_t kBestBid = 50'000'00000000LL;            // 50,000.0 USD, on the tick grid
+constexpr int64_t kBestAsk = kBestBid + 100 * kTick;       // wide spread so post-only never crosses
 constexpr int64_t kLevelSize = 50;
 constexpr int kBookLevels = 20;
 
@@ -101,10 +102,10 @@ void feed_l2_level(ExchangeSimulator& sim, int64_t ts, Side side, int64_t price,
 
 void build_book(ExchangeSimulator& sim, int64_t ts) {
   for (int i = 0; i < kBookLevels; ++i) {
-    feed_l2_level(sim, ts, Side::Buy, kBestBid - i, kLevelSize, false);
+    feed_l2_level(sim, ts, Side::Buy, kBestBid - i * kTick, kLevelSize, false);
   }
   for (int i = 0; i < kBookLevels; ++i) {
-    feed_l2_level(sim, ts, Side::Sell, kBestAsk + i, kLevelSize, i == kBookLevels - 1);
+    feed_l2_level(sim, ts, Side::Sell, kBestAsk + i * kTick, kLevelSize, i == kBookLevels - 1);
   }
 }
 
@@ -150,7 +151,8 @@ double run_once(uint64_t iters, CountingHandler& handler) {
     const int64_t id = next_id++;
     const Side side = (i & 1u) ? Side::Buy : Side::Sell;
     const int64_t px =
-        (side == Side::Buy) ? kBestBid - static_cast<int64_t>(i % 4) : kBestAsk + static_cast<int64_t>(i % 4);
+        (side == Side::Buy) ? kBestBid - static_cast<int64_t>(i % 4) * kTick
+                            : kBestAsk + static_cast<int64_t>(i % 4) * kTick;
     PendingEvent pe;
     pe.side_ = side;
     pe.order_type_ = OrderType::Limit;
@@ -168,7 +170,7 @@ double run_once(uint64_t iters, CountingHandler& handler) {
       PendingReplaceEvent re;
       re.order_id_ = id;
       re.instrument_id_ = kInstr;
-      re.price_ = px + ((side == Side::Buy) ? -1 : 1);
+      re.price_ = px + ((side == Side::Buy) ? -kTick : kTick);
       re.quantity_ = 6;
       re.timestamp_ns_ = ts;
       sim.on_pending_replace(re);

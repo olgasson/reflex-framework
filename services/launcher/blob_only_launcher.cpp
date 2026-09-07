@@ -5,7 +5,6 @@
 #include "launcher_common.hpp"
 
 #include "../../include/framework/agent_runner.hpp"
-#include "../../include/framework/noop_idle_strategy.hpp"
 
 #include "../../include/components/nio/nio_component.hpp"
 #include "../../include/components/blob/okx_blob.hpp"
@@ -25,7 +24,7 @@ int main() {
         launcher::kRingBufferSize, *wait_strategy);
 
     auto nio_component = std::make_unique<reflex::NIOComponent>(launcher::make_nio_config());
-    auto nio_idle_strategy = std::make_unique<reflex::NoopIdleStrategy>();
+    auto nio_idle_strategy = launcher::make_idle_strategy();
 
     // Add your blob to the NIO component
     auto blob_component = std::make_unique<reflex::OkxBlob>(launcher::make_blob_config(), log_buffer, claim_strategy);

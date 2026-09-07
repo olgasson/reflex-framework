@@ -30,6 +30,11 @@ public:
 
     int on_do_work() override;
 
+    // Records actually persisted to the output file (drain/integrity checks).
+    int64_t messages_written() const noexcept {
+      return messages_written_.load(std::memory_order_relaxed);
+    }
+
 protected:
     void on_start() override;
     void on_close() override;

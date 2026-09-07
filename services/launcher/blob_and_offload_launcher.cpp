@@ -5,7 +5,6 @@
 #include "launcher_common.hpp"
 
 #include "../../include/framework/agent_runner.hpp"
-#include "../../include/framework/noop_idle_strategy.hpp"
 
 #include "../../include/components/nio/nio_component.hpp"
 #include "../../include/components/blob/okx_blob.hpp"
@@ -44,7 +43,7 @@ int main() {
 
     // Create components
     auto nio_component = std::make_unique<reflex::NIOComponent>(launcher::make_nio_config());
-    auto nio_idle_strategy = std::make_unique<reflex::NoopIdleStrategy>();
+    auto nio_idle_strategy = launcher::make_idle_strategy();
 
     // Add your blob to the NIO component
     auto blob_component = std::make_unique<reflex::OkxBlob>(launcher::make_blob_config(), log_buffer, claim_strategy);
@@ -52,7 +51,7 @@ int main() {
 
     // Create logger component and pass the consumer side of the disruptor
     auto logger_component = std::make_unique<reflex::LoggerComponent>(logger_config, log_buffer, logger_barrier, claim_strategy);
-    auto logger_idle_strategy = std::make_unique<reflex::NoopIdleStrategy>();
+    auto logger_idle_strategy = launcher::make_idle_strategy();
 
     // Error handler
     auto error_handler = [](const std::exception& e) {

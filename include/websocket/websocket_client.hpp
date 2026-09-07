@@ -74,7 +74,11 @@ public:
   void service_ready_fds(const std::vector<struct pollfd>& fds);
 
   // Direct message sending (no queue needed since you control timing)
-  bool send_message_immediate(const std::string& message);
+  /** Queue @p message for transmission. @p on_sent (optional) is invoked once
+      the frame has been fully handed to the socket - use it to timestamp a
+      request at the moment it actually left the process. */
+  bool send_message_immediate(const std::string& message,
+                              std::function<void()> on_sent = {});
 
   //------------------------ zero-copy TX API ------------------------------
   /** Claim a transmit buffer for @p len payload bytes (after LWS_PRE).
@@ -87,6 +91,26 @@ public:
 
   void set_message_callback(MessageCallback callback);
   void set_state_callback(StateCallback callback);
+
+  /** Disable the OKX-style application-level text "ping" heartbeat for venues
+      that only accept websocket control frames (some venues close the
+      connection on unexpected text messages). */
+  void set_text_ping_enabled(bool enabled) { text_ping_enabled_ = enabled; }
+
+  /** Add a custom HTTP header to the websocket upgrade handshake (e.g. an
+      API-key header some venues require). Call before connect(); headers
+      persist across reconnects. `name` without trailing colon. */
+  void add_handshake_header(const std::string& name, const std::string& value);
+
+  /** Remove all custom handshake headers. Venues whose headers embed a
+      timestamped signature must clear + re-add fresh headers before every
+      connect, or reconnects fail auth with a stale signature. */
+  void clear_handshake_headers() { handshake_headers_.clear(); }
+
+  /** Invoked from the lws APPEND_HANDSHAKE_HEADER callback; returns 0 on
+      success, -1 if the header buffer is exhausted (aborts the connect). */
+  int append_handshake_headers(struct lws* wsi, unsigned char** p, unsigned char* end);
+
   void set_state(ConnectionState new_state, std::string_view reason = {});
   void set_disconnect_reason(std::string_view reason);
 
@@ -169,6 +193,7 @@ private:
   struct TxBlock {
     std::array<unsigned char, LWS_PRE + kMaxFrameSize> buf{};
     size_t len = 0;
+    std::function<void()> on_sent;
   };
 
   std::array<TxBlock, kTxPoolSize> tx_pool_{};
@@ -197,6 +222,11 @@ private:
 
 
   uint64_t last_state_change_nanos_ = 0;
+
+  bool text_ping_enabled_ = true;  // OKX-style text heartbeat (see setter)
+
+  // Extra HTTP headers for the upgrade handshake ("name:" -> value)
+  std::vector<std::pair<std::string, std::string>> handshake_headers_;
 
   static constexpr uint64_t CONNECTION_TIMEOUT_NANOS = 60ULL * 1'000'000'000; // 60 seconds (was 30 seconds)
 

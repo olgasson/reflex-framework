@@ -34,13 +34,14 @@ void BacktestOrderWriter::send_pending(const Order& order) {
 
 }
 
-void BacktestOrderWriter::send_pending_cancel(const Order& order) {
+void BacktestOrderWriter::send_pending_cancel(const Order& order, CancelPriority priority) {
   MessageSlot cancel_slot;
 
   auto* const event = new (cancel_slot.raw_data()) PendingCancelEvent();
 
   event->order_id_ = order.order_id_;
   event->request_id_ = order.request_id_;
+  event->priority_ = priority;
   event->timestamp_ns_ = engine_->get_current_time_ns();
 
   engine_->add_strategy_order_event(cancel_slot);

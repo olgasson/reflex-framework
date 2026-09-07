@@ -3,6 +3,8 @@
 
 #include "order_writer.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <disruptorplus/ring_buffer.hpp>
 #include <disruptorplus/single_threaded_claim_strategy.hpp>
@@ -16,6 +18,13 @@ namespace reflex {
 
 class RingBufferWriter : public OrderWriter {
  public:
+  // Number of times a publish found the ring full and had to block until the
+  // consumer freed a slot. Events are never dropped (a dropped ExecutedEvent
+  // is a permanent position desync), so this is the observable symptom of a
+  // stalled consumer; it should stay 0 and is exported so operators can see
+  // it.
+  static std::atomic<uint64_t> ring_full_stalls;
+
   // If no clock is supplied the writer owns an internal OffsetEpochNanoClock,
   // so events are always stamped with epoch nanos (comparable with exchange
   // timestamps).
@@ -27,7 +36,8 @@ class RingBufferWriter : public OrderWriter {
   // High-level order event sending methods
 
   void send_pending(const Order& order) override;
-  void send_pending_cancel(const Order& order) override;
+  void send_pending_cancel(const Order& order,
+                           CancelPriority priority) override;
   void send_pending_replace(const Order& order) override;
 
   void send_accepted(const Order& order);
@@ -44,6 +54,9 @@ class RingBufferWriter : public OrderWriter {
   // stamps it, lets `fill` populate the event-specific fields and publishes.
   template <typename Event, typename FillFn>
   void send_event(FillFn&& fill);
+
+  // Bounded try_claim spin before falling back to a blocking claim.
+  bool claim_with_retry(disruptorplus::sequence_range& range) const;
 
   std::shared_ptr<disruptorplus::ring_buffer<MessageSlot>> buffer_;
   std::shared_ptr<disruptorplus::single_threaded_claim_strategy<disruptorplus::spin_wait_strategy>> claim_strategy_;

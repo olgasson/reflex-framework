@@ -13,11 +13,15 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "../../include/framework/backoff_idle_strategy.hpp"
 #include "../../include/framework/component_config.hpp"
+#include "../../include/framework/idle_strategy.hpp"
+#include "../../include/framework/noop_idle_strategy.hpp"
 
 namespace launcher {
 
@@ -45,6 +49,21 @@ inline void await_shutdown() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   std::cout << "Shutdown signal received" << std::endl;
+}
+
+// ---------------------------------------------------------------------------
+// Idle strategy
+//
+// Collector default: backoff idle (spin -> yield -> park, ~0.1% of a core when
+// quiet, <= 1ms wakeup latency). Set REFLEX_IDLE=spin to restore busy-polling
+// for latency-critical deployments.
+// ---------------------------------------------------------------------------
+inline std::unique_ptr<reflex::IdleStrategy> make_idle_strategy() {
+  const char* env = std::getenv("REFLEX_IDLE");
+  if (env != nullptr && std::string(env) == "spin") {
+    return std::make_unique<reflex::NoopIdleStrategy>();
+  }
+  return std::make_unique<reflex::BackoffIdleStrategy>();
 }
 
 // ---------------------------------------------------------------------------
