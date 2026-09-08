@@ -65,14 +65,12 @@ int BinaryWriterComponent::on_do_work() {
     }
 
     if (available == INITIAL || available < next_) {
-        // Check if we need to flush based on time
         auto now = std::chrono::steady_clock::now();
         if (buffer_pos_ > 0 &&
             std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush_).count() > FLUSH_INTERVAL_MS) {
             flush_buffer();
         }
 
-        // Log stats periodically
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_stats_log_).count() > STATS_INTERVAL_MS) {
             log_stats();
         }
@@ -89,22 +87,18 @@ int BinaryWriterComponent::on_do_work() {
         ++work;
     }
 
-    // Signal progress
     if (work > 0) {
         writer_barrier_->publish(available);
     }
 
-    // Check if we need to flush
     auto now = std::chrono::steady_clock::now();
     if (buffer_pos_ > WRITE_BUFFER_SIZE / 2 ||
         std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush_).count() > FLUSH_INTERVAL_MS) {
         flush_buffer();
     }
 
-    // Check if we need to rotate the file
     rotate_file_if_needed();
 
-    // Log stats periodically
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_stats_log_).count() > STATS_INTERVAL_MS) {
         log_stats();
     }
@@ -118,14 +112,13 @@ void BinaryWriterComponent::write_file_header() {
     }
 
     FileHeader header;
-    header.magic_number_ = 0x52454658; // "REFX" in hex
+    header.magic_number_ = 0x52454658;
     header.version_ = 1;
     header.created_timestamp_ = get_nano_clock().epoch_nanos();
     header.message_slot_size_ = sizeof(MessageSlot);
     std::strncpy(header.component_name_, component_name_.c_str(), sizeof(header.component_name_) - 1);
     header.component_name_[sizeof(header.component_name_) - 1] = '\0';
 
-    // Write header to buffer
     if (buffer_pos_ + sizeof(FileHeader) > write_buffer_.size()) {
         flush_buffer();
     }
@@ -138,12 +131,10 @@ void BinaryWriterComponent::write_file_header() {
 }
 
 void BinaryWriterComponent::write_message_slot(const MessageSlot& slot) {
-    // Check if we need to flush buffer to make room
     if (buffer_pos_ + sizeof(MessageSlot) > write_buffer_.size()) {
         flush_buffer();
     }
 
-    // Copy the message slot to buffer
     std::memcpy(write_buffer_.data() + buffer_pos_, &slot, sizeof(MessageSlot));
     buffer_pos_ += sizeof(MessageSlot);
 
@@ -159,8 +150,6 @@ void BinaryWriterComponent::flush_buffer() {
     output_file_.write(write_buffer_.data(), static_cast<std::streamsize>(buffer_pos_));
     output_file_.flush();
 
-    // ofstream never throws unless exceptions are enabled, so failures (disk
-    // full, I/O error) must be detected from the stream state explicitly.
     if (!output_file_.good()) {
         if (!write_failed_) {
             write_failed_ = true;
@@ -168,8 +157,6 @@ void BinaryWriterComponent::flush_buffer() {
             logger_->error("Write to {} failed (badbit={}, failbit={}) - data is being lost, marking component FAILED",
                            current_file_path_, output_file_.bad(), output_file_.fail());
         }
-        // Drop the buffered data: retrying a wedged stream forever would just
-        // grow the buffer without bound.
         buffer_pos_ = 0;
         return;
     }
@@ -184,7 +171,6 @@ void BinaryWriterComponent::ensure_file_open() {
     if (!output_file_.is_open()) {
         current_file_path_ = generate_filename(base_file_path_, file_sequence_);
 
-        // Create directory if it doesn't exist
         std::filesystem::path file_path(current_file_path_);
         std::filesystem::create_directories(file_path.parent_path());
 
@@ -207,7 +193,6 @@ void BinaryWriterComponent::rotate_file_if_needed() {
         return;
     }
 
-    // Check file size
     auto current_size = current_file_bytes_.load();
     if (current_size > MAX_FILE_SIZE) {
         logger_->info("Rotating file due to size limit. Current size: {} bytes", current_size);
@@ -218,13 +203,11 @@ void BinaryWriterComponent::rotate_file_if_needed() {
         file_sequence_++;
         current_file_bytes_ = 0;
 
-        // Next call to ensure_file_open() will create a new file
         ensure_file_open();
     }
 }
 
 std::string BinaryWriterComponent::generate_filename(const std::string& base_path, int sequence) {
-  // Use process start time instead of current time for consistent naming
   auto time_t = std::chrono::system_clock::to_time_t(process_start_time_);
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
       process_start_time_.time_since_epoch()).count() % 1000;
@@ -257,19 +240,18 @@ void BinaryWriterComponent::log_stats() {
         const double messages_per_sec = (delta_messages * 1000.0) / static_cast<double>(duration.count());
         const double mbytes_per_sec = (delta_bytes * 1000.0) / (static_cast<double>(duration.count()) * 1024.0 * 1024.0);
 
-        // Convert to MB for consistency
         const double total_mb = total_bytes / (1024.0 * 1024.0);
         const double delta_mb = delta_bytes / (1024.0 * 1024.0);
 
-        // Build type breakdown string
         std::ostringstream type_breakdown;
-        static constexpr std::array<MessageType, 6> tracked_types{
+        static constexpr std::array<MessageType, 7> tracked_types{
             MessageType::L1UpdateEvent,
             MessageType::L2UpdateEvent,
             MessageType::TradeEvent,
             MessageType::MarkPriceEvent,
             MessageType::FundingRateEvent,
-            MessageType::OpenInterestEvent};
+            MessageType::OpenInterestEvent,
+            MessageType::LiquidationEvent};
 
         for (MessageType type : tracked_types) {
             const auto idx = static_cast<size_t>(type);
@@ -289,7 +271,6 @@ void BinaryWriterComponent::log_stats() {
                 type_breakdown << " ";
             }
 
-            // Use abbreviated names
             const char* abbrev;
             switch (type) {
                 case MessageType::L1UpdateEvent: abbrev = "L1"; break;
@@ -298,15 +279,15 @@ void BinaryWriterComponent::log_stats() {
                 case MessageType::MarkPriceEvent: abbrev = "MP"; break;
                 case MessageType::FundingRateEvent: abbrev = "FR"; break;
                 case MessageType::OpenInterestEvent: abbrev = "OI"; break;
+                case MessageType::LiquidationEvent: abbrev = "LQ"; break;
                 default: abbrev = "?"; break;
             }
 
-            // Use fixed width for alignment
             type_breakdown << abbrev << "=" << std::setw(8) << total;
             if (delta != 0) {
                 type_breakdown << "(+" << std::setw(5) << delta << ")";
             } else {
-                type_breakdown << "        "; // 8 spaces to align when no delta
+                type_breakdown << "        ";
             }
 
             message_type_counts_prev_[idx] = total;
@@ -338,7 +319,6 @@ void BinaryWriterComponent::record_message_type(MessageType type) {
         ++message_type_other_total_;
     }
 }
-
 
 
 }

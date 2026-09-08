@@ -27,10 +27,21 @@ limit order book:
   simulated with timestamp-ordered event queues, so an in-flight cancel and an
   incoming fill race each other.
 - **Pessimistic / optimistic queue models**: two conventions for how cancels
-  ahead of you are treated, since that is not observable from L2 data.
-- Post-only and limit orders, replaces with fill-aware quantity accounting,
-  and rejects are simulated; fills feed FIFO position/PnL accounting with
-  maker/taker fees.
+  ahead of you are treated, since that is not observable from L2 data. The
+  optimistic model is bounded by displayed depth (you can never be behind
+  more than the level shows), with an optional, calibratable cancellation
+  credit (`set_cancel_credit_alpha`, off by default) and a trade-netting
+  window so a print is never counted twice against the queue.
+- **L1-driven queue accounting** (`set_queue_accounting_on_l1`): the
+  top-of-book stream is usually real-time while depth diffs are sampled, so
+  touch observations can drive queue updates too. Resting behind the touch
+  requires L2 provenance; the simulator refuses to fabricate queue position
+  from an L1-only tape.
+- Post-only, limit, and IOC orders, replaces with total-quantity (fill-aware)
+  semantics, tick-grid validation, request-correlated cancel/replace
+  responses, and rejects are simulated; fills feed FIFO position/PnL
+  accounting with maker/taker fees expressed in parts-per-billion (negative
+  maker fee = rebate).
 
 ## Architecture
 
@@ -88,6 +99,9 @@ tracking.
 
 1. Capture market data: `blob_and_writer_launcher` subscribes to OKX public
    channels and writes binary capture files (set `REFLEX_OUTPUT_PATH`).
+   `REFLEX_OKX_BOOK_CHANNEL` selects `books` (default), `books-l2-tbt`, or
+   `books50-l2-tbt`. Collectors idle with a backoff strategy (near-zero CPU
+   when quiet); set `REFLEX_IDLE=spin` for busy-polling.
 2. Split multi-instrument captures into per-instrument chunks:
    `./build/splitter_main -o ./split_by_asset capture*.bin`
 3. Backtest against them: `./build/example_backtest split_by_asset/<inst>/*.bin`

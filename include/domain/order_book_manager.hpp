@@ -9,34 +9,27 @@
 
 namespace reflex::backtest {
 
-// Forward declaration for AssetInfoManager
 class AssetInfoManager;
 
 class OrderBookManager {
 public:
-  // Constructor with optional asset manager for tick sizes
   explicit OrderBookManager(std::shared_ptr<AssetInfoManager> asset_manager = nullptr);
 
-  // Process market data messages
   void process_l1_update(const L1UpdateEvent& event);
   void process_l2_update(const L2UpdateEvent& event);
   void process_trade_event(const TradeEvent& event);
 
-  // Incremental order book access
   marketdata::IncrementalOrderBook* get_incremental_book(int32_t instrument_id);
   const marketdata::IncrementalOrderBook* get_incremental_book(int32_t instrument_id) const;
 
-  // Market data queries
   int64_t get_mid_price(int32_t instrument_id) const;
   int64_t get_spread(int32_t instrument_id) const;
   int64_t get_best_bid(int32_t instrument_id) const;
   int64_t get_best_ask(int32_t instrument_id) const;
 
-  // Stats
   size_t num_instruments() const { return incremental_books_.size(); }
   void clear_all_books() { incremental_books_.clear(); }
 
-  // Performance stats
   struct UpdateStats {
     uint64_t l1_updates = 0;
     uint64_t l2_updates = 0;
@@ -56,4 +49,4 @@ private:
   marketdata::IncrementalOrderBook& get_or_create_incremental_book(int32_t instrument_id);
 };
 
-} // namespace reflex::backtest
+}

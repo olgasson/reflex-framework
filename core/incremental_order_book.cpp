@@ -13,10 +13,29 @@ inline bool is_true(BooleanEnum flag) {
 constexpr int64_t clamp_non_negative(int64_t value) {
   return value >= 0 ? value : 0;
 }
-} // namespace
+}
 
 IncrementalOrderBook::IncrementalOrderBook(std::size_t max_depth)
   : max_depth_(max_depth ? max_depth : 200) {}
+
+void IncrementalOrderBook::add_listener(
+    IncrementalOrderBookListener* listener) {
+  if (listener == nullptr ||
+      std::find(listeners_.begin(), listeners_.end(), listener) !=
+          listeners_.end()) {
+    return;
+  }
+  listeners_.push_back(listener);
+}
+
+void IncrementalOrderBook::notify_listeners() {
+  if (!book_ready_ || in_snapshot_ || in_batch_) {
+    return;
+  }
+  for (auto* listener : listeners_) {
+    listener->on_order_book_update(*this);
+  }
+}
 
 void IncrementalOrderBook::reset() {
   bids_.clear();
@@ -24,8 +43,11 @@ void IncrementalOrderBook::reset() {
   book_ready_ = false;
   in_snapshot_ = false;
   in_batch_ = false;
+  snapshot_seen_bid_ = false;
+  snapshot_seen_ask_ = false;
   last_update_ts_ns_ = 0;
   last_l2_ts_ns_ = 0;
+  has_l2_provenance_ = false;
   mark_dirty();
 }
 
@@ -48,6 +70,8 @@ void IncrementalOrderBook::start_snapshot() {
   book_ready_ = false;
   in_snapshot_ = true;
   in_batch_ = false;
+  snapshot_seen_bid_ = false;
+  snapshot_seen_ask_ = false;
   mark_dirty();
 }
 
@@ -60,7 +84,7 @@ auto lower_bound_price(Side& levels, bool is_bid, int64_t price) {
   };
   return std::lower_bound(levels.begin(), levels.end(), price, comp);
 }
-}  // namespace
+}
 
 void IncrementalOrderBook::set_level(bool is_bid, int64_t price, int64_t qty) {
   if (price <= 0) {
@@ -98,6 +122,28 @@ void IncrementalOrderBook::prune_side(SideLevels& side) {
   }
 }
 
+void IncrementalOrderBook::prune_crossed_levels(int64_t top_bid, int64_t top_ask) {
+  if (bids_.empty() || asks_.empty() || top_bid <= 0 || top_ask <= 0 || top_bid >= top_ask) {
+    return;
+  }
+
+  auto first_valid_ask = std::find_if(asks_.begin(), asks_.end(), [top_bid](const Level& level) {
+    return level.price > top_bid;
+  });
+  if (first_valid_ask != asks_.begin()) {
+    asks_.erase(asks_.begin(), first_valid_ask);
+    mark_dirty();
+  }
+
+  auto first_valid_bid = std::find_if(bids_.begin(), bids_.end(), [top_ask](const Level& level) {
+    return level.price < top_ask;
+  });
+  if (first_valid_bid != bids_.begin()) {
+    bids_.erase(bids_.begin(), first_valid_bid);
+    mark_dirty();
+  }
+}
+
 void IncrementalOrderBook::apply_l2_update(const L2UpdateEvent& event) {
   if (!ensure_instrument(event.instrument_id_)) {
     return;
@@ -112,30 +158,39 @@ void IncrementalOrderBook::apply_l2_update(const L2UpdateEvent& event) {
   }
 
   const bool is_bid = (event.side_ == Side::Buy);
+  if (is_snapshot) {
+    snapshot_seen_bid_ = snapshot_seen_bid_ || is_bid;
+    snapshot_seen_ask_ = snapshot_seen_ask_ || !is_bid;
+  }
 
-  // Process level 1 (always present)
   set_level(is_bid, event.price_1_, event.size_1_);
 
-  // Process level 2 (if present)
   if (event.num_levels_ == 2) {
     set_level(is_bid, event.price_2_, event.size_2_);
   }
 
-  // Update book ready state based on last batch flag
+  const bool is_batch = is_true(event.is_batch_message_);
   const bool is_last = is_true(event.is_last_batch_);
+  const bool complete = !is_batch || is_last;
   if (is_snapshot) {
-    if (is_last) {
+    if (complete && snapshot_seen_bid_ && snapshot_seen_ask_) {
       in_snapshot_ = false;
       in_batch_ = false;
-      book_ready_ = !bids_.empty() || !asks_.empty();
+      book_ready_ = !bids_.empty() && !asks_.empty();
     }
   } else {
-    if (is_last) {
+    if (complete) {
       in_batch_ = false;
       book_ready_ = !bids_.empty() || !asks_.empty();
     } else {
       in_batch_ = true;
     }
+  }
+  if (complete && !bids_.empty() && !asks_.empty()) {
+    has_l2_provenance_ = true;
+  }
+  if (complete) {
+    notify_listeners();
   }
 }
 
@@ -152,35 +207,38 @@ void IncrementalOrderBook::apply_l1_update(const L1UpdateEvent& event) {
   set_level(true, event.bid_price_, event.bid_size_);
   set_level(false, event.offer_price_, event.offer_size_);
 
-  // Only erase old best bid if it DEGRADED (moved down)
-  // If bid improved (moved up), keep old level - it becomes level 2
   if (event.bid_price_ > 0 && prev_best_bid > 0 && prev_best_bid != event.bid_price_) {
-    if (event.bid_price_ < prev_best_bid) {  // Bid degraded
-      auto it = lower_bound_price(bids_, true, prev_best_bid);
-      if (it != bids_.end() && it->price == prev_best_bid) {
-        bids_.erase(it);
+    if (event.bid_price_ < prev_best_bid) {
+      const auto new_best = std::find_if(
+          bids_.begin(), bids_.end(), [&event](const Level& level) {
+            return level.price <= event.bid_price_;
+          });
+      if (new_best != bids_.begin()) {
+        bids_.erase(bids_.begin(), new_best);
         mark_dirty();
       }
     }
-    // else: bid improved, keep old level
   }
 
-  // Only erase old best ask if it DEGRADED (moved up)
-  // If ask improved (moved down), keep old level - it becomes level 2
   if (event.offer_price_ > 0 && prev_best_ask > 0 && prev_best_ask != event.offer_price_) {
-    if (event.offer_price_ > prev_best_ask) {  // Ask degraded
-      auto it = lower_bound_price(asks_, false, prev_best_ask);
-      if (it != asks_.end() && it->price == prev_best_ask) {
-        asks_.erase(it);
+    if (event.offer_price_ > prev_best_ask) {
+      const auto new_best = std::find_if(
+          asks_.begin(), asks_.end(), [&event](const Level& level) {
+            return level.price >= event.offer_price_;
+          });
+      if (new_best != asks_.begin()) {
+        asks_.erase(asks_.begin(), new_best);
         mark_dirty();
       }
     }
-    // else: ask improved, keep old level
   }
+
+  prune_crossed_levels(event.bid_price_, event.offer_price_);
 
   if (!book_ready_) {
     book_ready_ = (!bids_.empty() && !asks_.empty());
   }
+  notify_listeners();
 }
 
 void IncrementalOrderBook::apply_trade_to_side(bool hit_bid, int64_t price, int64_t qty) {
@@ -253,6 +311,7 @@ void IncrementalOrderBook::apply_trade(const TradeEvent& event) {
   if (book_ready_) {
     book_ready_ = (!bids_.empty() && !asks_.empty());
   }
+  notify_listeners();
 }
 
 void IncrementalOrderBook::ensure_cache_initialized() const {
@@ -355,4 +414,4 @@ IncrementalOrderBook::Snapshot IncrementalOrderBook::snapshot() const {
   return snap;
 }
 
-} // namespace reflex::marketdata
+}

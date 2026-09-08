@@ -51,7 +51,6 @@ class OkxBlobTest : public ::testing::Test {
     ring_buffer_.reset();
   }
 
-  // ---- message builders (OKX wire shapes) ----
   std::string make_trade_message(const std::string& side) const {
     return std::string("{\"arg\":{\"channel\":\"trades-all\",\"instId\":\"") + instrument_
         + "\"},\"data\":[{\"instId\":\"" + instrument_ + "\",\"side\":\"" + side
@@ -64,7 +63,6 @@ class OkxBlobTest : public ::testing::Test {
         + "\"ts\":\"1700000000000\"}]}";
   }
 
-  // 2 bid levels, 1 ask level, action == snapshot
   std::string make_l2_snapshot_message() const {
     return std::string("{\"arg\":{\"channel\":\"books\",\"instId\":\"") + instrument_
         + "\"},\"action\":\"snapshot\",\"data\":[{"
@@ -73,8 +71,6 @@ class OkxBlobTest : public ::testing::Test {
         + "\"ts\":\"1700000000000\"}]}";
   }
 
-  // Sequenced L2 frames for gap-detection tests (OKX books seqId/prevSeqId
-  // are JSON numbers, not strings).
   std::string make_l2_seq_message(const std::string& action, int64_t prev_seq_id, int64_t seq_id) const {
     return std::string("{\"arg\":{\"channel\":\"books\",\"instId\":\"") + instrument_ + "\"},\"action\":\"" + action
         + "\",\"data\":[{"
@@ -89,7 +85,6 @@ class OkxBlobTest : public ::testing::Test {
     return (*ring_buffer_)[seq].template as<Event>();
   }
 
-  // sequence_t is unsigned; "nothing published yet" is the all-ones sentinel.
   static constexpr disruptorplus::sequence_t kNone = static_cast<disruptorplus::sequence_t>(-1);
   disruptorplus::sequence_t last_seq() const { return claim_strategy_->last_published(); }
   bool published() const { return last_seq() != kNone; }
@@ -108,7 +103,6 @@ class OkxBlobTest : public ::testing::Test {
   std::shared_ptr<disruptorplus::sequence_barrier<disruptorplus::spin_wait_strategy>> consumer_barrier_;
 };
 
-// ---- trades: routed through the real single-parse entry point ----
 TEST_F(OkxBlobTest, ParsesBuyTradeSide) {
   blob_->handle_business_message(make_trade_message("buy"));
   ASSERT_TRUE(published()) << "No trade event was published";
@@ -127,7 +121,6 @@ TEST_F(OkxBlobTest, ParsesSellTradeSide) {
   drain();
 }
 
-// ---- L1 / BBO ----
 TEST_F(OkxBlobTest, ParsesBboIntoL1Update) {
   blob_->handle_public_message(make_bbo_message());
   ASSERT_TRUE(published()) << "No L1 event was published";
@@ -139,11 +132,8 @@ TEST_F(OkxBlobTest, ParsesBboIntoL1Update) {
   drain();
 }
 
-// ---- L2 book: snapshot flag now comes from the parsed "action" field ----
 TEST_F(OkxBlobTest, ParsesL2SnapshotWithActionField) {
   blob_->handle_public_message(make_l2_snapshot_message());
-  // bids published first (seq 0): 2 levels packed into one message;
-  // asks second (seq 1). So the last published sequence must be 1.
   ASSERT_TRUE(published()) << "Expected L2 messages to be published";
   ASSERT_EQ(last_seq(), 1u) << "Expected exactly two L2 messages (bid+ask)";
   const L2UpdateEvent& bids = event_at<L2UpdateEvent>(0);
@@ -161,7 +151,6 @@ TEST_F(OkxBlobTest, ParsesL2SnapshotWithActionField) {
   drain();
 }
 
-// ---- robustness: pong and malformed payloads must not publish or crash ----
 TEST_F(OkxBlobTest, PongIsIgnored) {
   EXPECT_NO_THROW(blob_->handle_public_message("pong"));
   EXPECT_NO_THROW(blob_->handle_business_message("pong"));
@@ -174,7 +163,6 @@ TEST_F(OkxBlobTest, MalformedJsonIsIgnored) {
   EXPECT_FALSE(published()) << "malformed input must not publish anything";
 }
 
-// ---- malformed frames: missing fields / wrong types must be dropped, not crash
 
 TEST_F(OkxBlobTest, TradeWithMissingPriceIsDropped) {
   const std::string msg = std::string("{\"arg\":{\"channel\":\"trades-all\",\"instId\":\"") + instrument_
@@ -191,7 +179,6 @@ TEST_F(OkxBlobTest, TradeWithMissingTimestampIsDropped) {
 }
 
 TEST_F(OkxBlobTest, TradeWithNumericPriceTypeIsDropped) {
-  // px/sz as JSON numbers instead of strings
   const std::string msg = std::string("{\"arg\":{\"channel\":\"trades-all\",\"instId\":\"") + instrument_
       + "\"},\"data\":[{\"instId\":\"" + instrument_ + "\",\"side\":\"buy\",\"px\":100.0,\"sz\":0.01,\"ts\":\"1700000000000\"}]}";
   EXPECT_NO_THROW(blob_->handle_business_message(msg));
@@ -213,7 +200,6 @@ TEST_F(OkxBlobTest, BboWithMissingTimestampIsDropped) {
 }
 
 TEST_F(OkxBlobTest, BboWithNumericLevelTypesIsDropped) {
-  // bid/ask price and size as JSON numbers instead of strings
   const std::string msg = std::string("{\"arg\":{\"channel\":\"bbo-tbt\",\"instId\":\"") + instrument_
       + "\"},\"data\":[{\"asks\":[[100.6,3,0,1]],\"bids\":[[100.5,2,0,1]],\"ts\":\"1700000000000\"}]}";
   EXPECT_NO_THROW(blob_->handle_public_message(msg));
@@ -235,8 +221,6 @@ TEST_F(OkxBlobTest, L2WithMissingInstIdIsDropped) {
 }
 
 TEST_F(OkxBlobTest, L2MalformedLevelsAreSkipped) {
-  // First bid level uses JSON numbers (wrong type) and must be skipped;
-  // second bid level and the ask level are valid and must be published.
   const std::string msg = std::string("{\"arg\":{\"channel\":\"books\",\"instId\":\"") + instrument_
       + "\"},\"action\":\"snapshot\",\"data\":[{"
       + "\"asks\":[[\"100.1\",\"1\",\"0\",\"1\"]],"
@@ -258,7 +242,6 @@ TEST_F(OkxBlobTest, L2WithNoDataIsDropped) {
   EXPECT_FALSE(published());
 }
 
-// ---- L2 sequence-gap detection ----
 
 TEST_F(OkxBlobTest, L2InSequenceUpdatesArePublished) {
   blob_->handle_public_message(make_l2_seq_message("snapshot", -1, 10));
@@ -275,11 +258,9 @@ TEST_F(OkxBlobTest, L2SequenceGapDropsUpdate) {
   ASSERT_TRUE(published());
   const auto after_snapshot = last_seq();
 
-  // prevSeqId 15 != last seen seqId 10 -> gap: frame must be dropped
   blob_->handle_public_message(make_l2_seq_message("update", 15, 16));
   EXPECT_EQ(last_seq(), after_snapshot) << "gapped update must not be published";
 
-  // gap recovery enqueues unsubscribe + subscribe onto the paced queue
   EXPECT_EQ(blob_->subscription_queue_->size(), 2u);
   drain();
 }
@@ -287,8 +268,6 @@ TEST_F(OkxBlobTest, L2SequenceGapDropsUpdate) {
 TEST_F(OkxBlobTest, L2SnapshotResetsSequenceTracking) {
   blob_->handle_public_message(make_l2_seq_message("snapshot", -1, 10));
   blob_->handle_public_message(make_l2_seq_message("update", 10, 11));
-  // Fresh snapshot re-seeds the sequence: following update chains off the
-  // snapshot's seqId, not the pre-snapshot one.
   blob_->handle_public_message(make_l2_seq_message("snapshot", -1, 50));
   const auto after_snapshot = last_seq();
   blob_->handle_public_message(make_l2_seq_message("update", 50, 51));
@@ -297,4 +276,4 @@ TEST_F(OkxBlobTest, L2SnapshotResetsSequenceTracking) {
   drain();
 }
 
-}  // namespace
+}

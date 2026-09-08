@@ -59,17 +59,22 @@ public:
     return event;
   }
 
-  static CancelAcceptedEvent create_cancel_accepted_event(int64_t timestamp,int64_t order_id) {
+  static CancelAcceptedEvent create_cancel_accepted_event(
+      int64_t timestamp, int64_t order_id, int64_t request_id) {
     CancelAcceptedEvent event{};
     event.timestamp_ns_ = timestamp;
     event.order_id_ = order_id;
+    event.request_id_ = request_id;
     return event;
   }
 
-  static CancelRejectedEvent create_cancel_rejected_event(uint64_t timestamp,int64_t order_id,RejectReason reason) {
+  static CancelRejectedEvent create_cancel_rejected_event(
+      uint64_t timestamp, int64_t order_id, int64_t request_id,
+      RejectReason reason) {
     CancelRejectedEvent event{};
     event.timestamp_ns_ = timestamp;
     event.order_id_ = order_id;
+    event.request_id_ = request_id;
     event.reject_reason_ = reason;
     return event;
   }
@@ -93,25 +98,28 @@ public:
     return event;
   }
 
-  static ReplaceAcceptedEvent create_replace_accepted_event(uint64_t timestamp, int64_t order_id) {
+  static ReplaceAcceptedEvent create_replace_accepted_event(
+      uint64_t timestamp, int64_t order_id, int64_t request_id) {
     ReplaceAcceptedEvent event{};
     event.timestamp_ns_ = timestamp;
     event.order_id_ = order_id;
+    event.request_id_ = request_id;
     return event;
   }
 
   static ReplaceRejectedEvent create_replace_rejected_event(
     uint64_t timestamp,
     int64_t order_id,
+    int64_t request_id,
     RejectReason reason
 ) {
     ReplaceRejectedEvent event{};
     event.timestamp_ns_ = timestamp;
     event.order_id_ = order_id;
+    event.request_id_ = request_id;
     event.reject_reason_ = reason;
     return event;
   }
-
 
 
   static uint64_t now_ns() {
@@ -120,4 +128,4 @@ public:
   }
 };
 
-} // namespace reflex::test
+}

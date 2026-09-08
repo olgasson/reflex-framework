@@ -48,11 +48,10 @@ class LoggerComponent : public BaseComponent, public HeartbeatListener, public O
   disruptorplus::sequence_t next_{0};
   std::unique_ptr<MessageSlotReader> reader_;
 
-  // Stats tracking
   std::chrono::steady_clock::time_point last_stats_log_;
   std::atomic<uint64_t> l1_count_;
   std::atomic<uint64_t> l2_count_;
   std::atomic<uint64_t> trade_count_;
 };
 
-}  // namespace reflex
+}

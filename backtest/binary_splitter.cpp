@@ -12,16 +12,14 @@
 
 namespace reflex {
 
-// Single file constructor (backward compatibility)
 BinarySplitter::BinarySplitter(const std::string& input_file)
     : input_files_{input_file}
-    , filename_pattern_("{name}_data.bin") {  // Default pattern uses asset name
+    , filename_pattern_("{name}_data.bin") {
 }
 
-// Multi-file constructor
 BinarySplitter::BinarySplitter(const std::vector<std::string>& input_files)
     : input_files_(input_files)
-    , filename_pattern_("{name}_data.bin") {  // Default pattern uses asset name
+    , filename_pattern_("{name}_data.bin") {
 }
 
 void BinarySplitter::set_max_chunk_bytes(uint64_t max_bytes) {
@@ -65,23 +63,19 @@ bool BinarySplitter::split_by_instrument(const std::string& output_dir) {
     spdlog::info("Starting split of {} files into directory {}",
                  input_files_.size(), output_dir);
 
-    // Ensure AssetInfoManager is initialized
     if (!AssetInfoManager::is_initialized()) {
         spdlog::warn("AssetInfoManager not initialized, calling initialize()");
         AssetInfoManager::initialize();
     }
 
-    // Ensure output directory exists
     ensure_output_directory(output_dir);
 
-    // Reset stats
     stats_ = SplitStats{};
     writers_.clear();
     bytes_written_.clear();
     chunk_indices_.clear();
     stats_.total_input_files = input_files_.size();
 
-    // Process each input file sequentially
     for (const auto& input_file : input_files_) {
         spdlog::info("Processing file: {}", input_file);
 
@@ -95,7 +89,6 @@ bool BinarySplitter::split_by_instrument(const std::string& output_dir) {
                      input_file, stats_.total_events);
     }
 
-    // Close all writers
     writers_.clear();
     bytes_written_.clear();
 
@@ -104,7 +97,6 @@ bool BinarySplitter::split_by_instrument(const std::string& output_dir) {
     spdlog::info("Split complete: {} events from {} files across {} instruments",
                  stats_.total_events, stats_.total_input_files, stats_.total_instruments);
 
-    // Print summary per instrument using asset names
     for (const auto& [inst_id, count] : stats_.events_per_instrument) {
         std::string asset_name = stats_.instrument_names.count(inst_id) ?
                                 stats_.instrument_names.at(inst_id) :
@@ -122,7 +114,6 @@ bool BinarySplitter::split_by_instrument(const std::string& output_dir) {
 }
 
 bool BinarySplitter::process_input_file(const std::string& input_file, const std::string& output_dir) {
-    // Create binary reader for this input file
     reflex::backtest::BinaryReader reader(input_file);
     if (!reader.open()) {
         spdlog::error("Failed to open input file: {}", input_file);
@@ -131,11 +122,9 @@ bool BinarySplitter::process_input_file(const std::string& input_file, const std
 
     size_t events_from_this_file = 0;
 
-    // Process each message slot from this file
     while (const MessageSlot* slot = reader.read_next_message()) {
         uint32_t instrument_id = 0;
 
-        // Extract instrument_id based on message type
         switch (slot->get_type()) {
             case reflex::MessageType::L1UpdateEvent: {
                 const auto& event = slot->as<L1UpdateEvent>();
@@ -167,8 +156,12 @@ bool BinarySplitter::process_input_file(const std::string& input_file, const std
                 instrument_id = event.instrument_id_;
                 break;
             }
+            case reflex::MessageType::LiquidationEvent: {
+                const auto& event = slot->as<LiquidationEvent>();
+                instrument_id = event.instrument_id_;
+                break;
+            }
             default:
-                // Skip unknown/unsupported message types
                 spdlog::debug("Skipping unsupported message type: {}",
                              static_cast<int>(slot->get_type()));
                 continue;
@@ -178,7 +171,6 @@ bool BinarySplitter::process_input_file(const std::string& input_file, const std
             continue;
         }
 
-        // Write the complete MessageSlot (not just the event!)
         write_message_slot_to_instrument_file(instrument_id, *slot, output_dir);
 
         stats_.total_events++;
@@ -190,7 +182,6 @@ bool BinarySplitter::process_input_file(const std::string& input_file, const std
     return true;
 }
 
-// Write complete MessageSlot
 void BinarySplitter::write_message_slot_to_instrument_file(uint32_t instrument_id,
                                                           const MessageSlot& slot,
                                                           const std::string& output_dir) {
@@ -210,17 +201,15 @@ void BinarySplitter::write_message_slot_to_instrument_file(uint32_t instrument_i
 
     bytes_written_[instrument_id] += sizeof(MessageSlot);
 
-    // Update stats and flush periodically
     stats_.events_per_instrument[instrument_id]++;
     if (stats_.events_per_instrument[instrument_id] % 1000 == 0) {
         it->second->flush();
     }
 }
 
-// Write file header
 void BinarySplitter::write_file_header(std::ofstream& writer) {
     FileHeader header;
-    header.magic_number_ = 0x52454658; // "REFX" in hex
+    header.magic_number_ = 0x52454658;
     header.version_ = 1;
     header.created_timestamp_ = 0;
     header.message_slot_size_ = sizeof(MessageSlot);
@@ -275,26 +264,21 @@ std::string BinarySplitter::get_output_filename(uint32_t instrument_id,
                                                uint32_t chunk_index) const {
     std::string asset_name = get_asset_name(instrument_id);
 
-    // Create subfolder path: output_dir/ASSET_NAME/
     std::filesystem::path subfolder_path = std::filesystem::path(output_dir) / asset_name;
 
-    // Ensure subfolder exists
     std::filesystem::create_directories(subfolder_path);
 
-    // Replace placeholders in filename pattern
     std::string filename = filename_pattern_;
 
-    // Replace {name} with asset name
     size_t pos = 0;
     while ((pos = filename.find("{name}", pos)) != std::string::npos) {
-        filename.replace(pos, 6, asset_name);  // 6 = length of "{name}"
+        filename.replace(pos, 6, asset_name);
         pos += asset_name.length();
     }
 
-    // Replace {id} with instrument_id
     pos = 0;
     while ((pos = filename.find("{id}", pos)) != std::string::npos) {
-        filename.replace(pos, 4, std::to_string(instrument_id));  // 4 = length of "{id}"
+        filename.replace(pos, 4, std::to_string(instrument_id));
         pos += std::to_string(instrument_id).length();
     }
 
@@ -311,15 +295,13 @@ std::string BinarySplitter::get_output_filename(uint32_t instrument_id,
 
 std::string BinarySplitter::get_asset_name(uint32_t instrument_id) const {
     if (!use_asset_names_ || !AssetInfoManager::is_initialized()) {
-        return std::to_string(instrument_id);  // Fallback to ID
+        return std::to_string(instrument_id);
     }
 
-    // Try to get asset info from AssetInfoManager
     const AssetInfo* asset_info = AssetInfoManager::get_by_instrument_id(instrument_id);
     if (asset_info && asset_info->exchange_symbol_) {
         std::string clean_symbol(asset_info->exchange_symbol_);
 
-        // Clean up symbol for use as folder/file name (remove invalid characters)
         std::replace_if(clean_symbol.begin(), clean_symbol.end(),
                         [](char c) {
                             return c == '/' || c == '\\' || c == ':' || c == '*' ||
@@ -345,7 +327,6 @@ void BinarySplitter::ensure_output_directory(const std::string& output_dir) cons
 }
 
 std::unique_ptr<std::ofstream> BinarySplitter::create_writer(const std::string& filename) {
-    // Ensure the directory exists before creating the file
     std::filesystem::create_directories(std::filesystem::path(filename).parent_path());
 
     auto writer = std::make_unique<std::ofstream>(filename,
@@ -356,4 +337,4 @@ std::unique_ptr<std::ofstream> BinarySplitter::create_writer(const std::string& 
     return writer;
 }
 
-} // namespace reflex
+}

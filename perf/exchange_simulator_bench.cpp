@@ -1,15 +1,3 @@
-// perf/exchange_simulator_bench.cpp
-//
-// Micro-benchmark for the ExchangeSimulator order path (the resting-order book:
-// place / cancel / replace / trade-fill). Drives a realistic churn of post-only
-// quotes resting near the touch, with a rolling window so a steady population of
-// orders stays resting across several price levels.
-//
-// The response-stream checksum is a determinism guard: any change that altered
-// accepts/rejects/fills/cancels would change it. Use it to confirm an S-4
-// refactor is behavior-neutral (identical checksum before vs after).
-//
-// Usage: exchange_simulator_bench [num_iters] [repeats]
 
 #include <chrono>
 #include <cstdint>
@@ -31,7 +19,7 @@ namespace {
 
 class CountingHandler final : public ExchangeResponseHandler {
  public:
-  uint64_t checksum = 1469598103934665603ULL;  // FNV-1a offset basis
+  uint64_t checksum = 1469598103934665603ULL;
   uint64_t accepts = 0, rejects = 0, fills = 0, cancels = 0, replaces = 0, other = 0;
 
   void on_exchange_response(const MessageSlot& slot) override {
@@ -79,9 +67,10 @@ class CountingHandler final : public ExchangeResponseHandler {
   void fold(uint64_t v) { checksum = (checksum ^ v) * 1099511628211ULL; }
 };
 
-constexpr int32_t kInstr = 10301;        // BTC-USDT-SWAP
-constexpr int64_t kBestBid = 1'000'000;  // integer ticks; wide spread so post-only never crosses
-constexpr int64_t kBestAsk = 1'000'100;
+constexpr int32_t kInstr = 10301;
+constexpr int64_t kTick = 10'000'000;
+constexpr int64_t kBestBid = 50'000'00000000LL;
+constexpr int64_t kBestAsk = kBestBid + 100 * kTick;
 constexpr int64_t kLevelSize = 50;
 constexpr int kBookLevels = 20;
 
@@ -101,10 +90,10 @@ void feed_l2_level(ExchangeSimulator& sim, int64_t ts, Side side, int64_t price,
 
 void build_book(ExchangeSimulator& sim, int64_t ts) {
   for (int i = 0; i < kBookLevels; ++i) {
-    feed_l2_level(sim, ts, Side::Buy, kBestBid - i, kLevelSize, false);
+    feed_l2_level(sim, ts, Side::Buy, kBestBid - i * kTick, kLevelSize, false);
   }
   for (int i = 0; i < kBookLevels; ++i) {
-    feed_l2_level(sim, ts, Side::Sell, kBestAsk + i, kLevelSize, i == kBookLevels - 1);
+    feed_l2_level(sim, ts, Side::Sell, kBestAsk + i * kTick, kLevelSize, i == kBookLevels - 1);
   }
 }
 
@@ -116,7 +105,7 @@ double run_once(uint64_t iters, CountingHandler& handler) {
   clock->set_time(ts);
   build_book(sim, ts);
 
-  constexpr int W = 256;  // thick-level config to exercise the trade-fill path
+  constexpr int W = 256;
   std::vector<int64_t> live(W, 0);
   int64_t next_id = 1;
 
@@ -126,7 +115,6 @@ double run_once(uint64_t iters, CountingHandler& handler) {
     clock->set_time(ts);
     const int slot = static_cast<int>(i % W);
 
-    // Cancel whatever currently occupies this slot (rolls the window).
     if (live[slot] != 0) {
       PendingCancelEvent c;
       c.order_id_ = live[slot];
@@ -135,7 +123,6 @@ double run_once(uint64_t iters, CountingHandler& handler) {
       live[slot] = 0;
     }
 
-    // Occasionally aggress with a trade to fill resting orders.
     if ((i & 15u) == 0) {
       TradeEvent tr;
       tr.instrument_id_ = kInstr;
@@ -146,15 +133,15 @@ double run_once(uint64_t iters, CountingHandler& handler) {
       sim.process_trade_event(tr);
     }
 
-    // Place a fresh post-only quote across a few levels near the touch.
     const int64_t id = next_id++;
     const Side side = (i & 1u) ? Side::Buy : Side::Sell;
     const int64_t px =
-        (side == Side::Buy) ? kBestBid - static_cast<int64_t>(i % 4) : kBestAsk + static_cast<int64_t>(i % 4);
+        (side == Side::Buy) ? kBestBid - static_cast<int64_t>(i % 4) * kTick
+                            : kBestAsk + static_cast<int64_t>(i % 4) * kTick;
     PendingEvent pe;
     pe.side_ = side;
     pe.order_type_ = OrderType::Limit;
-    pe.exec_inst_ = ExecInst::ParticipateDontInitiate;  // post-only -> rests
+    pe.exec_inst_ = ExecInst::ParticipateDontInitiate;
     pe.order_id_ = id;
     pe.price_ = px;
     pe.quantity_ = 5;
@@ -163,12 +150,11 @@ double run_once(uint64_t iters, CountingHandler& handler) {
     sim.on_pending(pe);
     live[slot] = id;
 
-    // Occasionally re-price the just-placed order.
     if ((i & 7u) == 0) {
       PendingReplaceEvent re;
       re.order_id_ = id;
       re.instrument_id_ = kInstr;
-      re.price_ = px + ((side == Side::Buy) ? -1 : 1);
+      re.price_ = px + ((side == Side::Buy) ? -kTick : kTick);
       re.quantity_ = 6;
       re.timestamp_ns_ = ts;
       sim.on_pending_replace(re);
@@ -178,7 +164,7 @@ double run_once(uint64_t iters, CountingHandler& handler) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count() / 1e6;
 }
 
-}  // namespace
+}
 
 int main(int argc, char** argv) {
   reflex::AssetInfoManager::initialize();

@@ -30,6 +30,10 @@ public:
 
     int on_do_work() override;
 
+    int64_t messages_written() const noexcept {
+      return messages_written_.load(std::memory_order_relaxed);
+    }
+
 protected:
     void on_start() override;
     void on_close() override;
@@ -52,9 +56,6 @@ private:
     std::string base_file_path_;
     std::string current_file_path_;
 
-    // Performance tracking. total_bytes_written_ is the process-lifetime
-    // total; current_file_bytes_ is the per-file rotation counter (reset on
-    // each rotation).
     std::atomic<int64_t> messages_written_{0};
     std::atomic<int64_t> total_bytes_written_{0};
     std::atomic<int64_t> current_file_bytes_{0};
@@ -62,24 +63,22 @@ private:
     std::chrono::steady_clock::time_point last_stats_log_;
     std::chrono::steady_clock::time_point file_start_time_;
 
-    // Stats tracking for rate calculation
     int64_t last_stats_messages_{0};
     int64_t last_stats_bytes_{0};
 
     std::chrono::system_clock::time_point process_start_time_;
 
-    // Buffer for batch writes
-    static constexpr size_t WRITE_BUFFER_SIZE = 256 * 1024; // 256KB buffer (4x larger)
-    static constexpr int64_t FLUSH_INTERVAL_MS = 50;        // Flush every 50ms
-    static constexpr size_t FLUSH_THRESHOLD_PCT = 50;       // Flush at 50% full
-    static constexpr int64_t MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1GB max file size
-    static constexpr int64_t STATS_INTERVAL_MS = 5000;    // Log stats every 5 seconds
+    static constexpr size_t WRITE_BUFFER_SIZE = 256 * 1024;
+    static constexpr int64_t FLUSH_INTERVAL_MS = 50;
+    static constexpr size_t FLUSH_THRESHOLD_PCT = 50;
+    static constexpr int64_t MAX_FILE_SIZE = 1024 * 1024 * 1024;
+    static constexpr int64_t STATS_INTERVAL_MS = 5000;
 
     std::vector<char> write_buffer_;
     size_t buffer_pos_{0};
     int file_sequence_{0};
     bool file_header_written_{false};
-    bool write_failed_{false};  // sticky: set when the stream goes bad (disk full etc.)
+    bool write_failed_{false};
 
     static constexpr size_t MESSAGE_TYPE_BUCKETS = 32;
     std::array<uint64_t, MESSAGE_TYPE_BUCKETS> message_type_counts_{};

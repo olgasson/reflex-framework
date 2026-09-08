@@ -6,12 +6,10 @@ namespace reflex {
 class NoopIdleStrategy final : public IdleStrategy {
 public:
 
-    void idle(int /*work_count*/) override {
-        //do nothing
+    void idle(int ) override {
     }
 
     void reset() override {
-        //do nothing
     }
 
 };

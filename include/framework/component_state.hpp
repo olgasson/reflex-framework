@@ -3,10 +3,9 @@
 #include <ostream>
 #include <string>
 #include <spdlog/spdlog.h>
-#include <spdlog/fmt/ostr.h>   // for operator<< support
+#include <spdlog/fmt/ostr.h>
 
 
-// Define your enum in the reflex namespace
 namespace reflex {
 
 enum class ComponentState {
@@ -30,12 +29,11 @@ inline std::string to_string(ComponentState state) {
   }
 }
 
-// std::ostream support
 inline std::ostream& operator<<(std::ostream& os, ComponentState state) {
   return os << to_string(state);
 }
 
-} // namespace reflex
+}
 
 template <>
 struct fmt::formatter<reflex::ComponentState> : formatter<std::string> {

@@ -1,36 +1,24 @@
 #pragma once
-/**
- *  launcher_common.hpp
- *
- *  Shared scaffolding for the launcher executables: signal-driven shutdown,
- *  the common component/blob configuration and the default OKX symbol
- *  universe. Each launcher translation unit keeps only its distinct
- *  component wiring.
- */
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "../../include/framework/backoff_idle_strategy.hpp"
 #include "../../include/framework/component_config.hpp"
+#include "../../include/framework/idle_strategy.hpp"
+#include "../../include/framework/noop_idle_strategy.hpp"
 
 namespace launcher {
 
-// Ring buffer capacity shared by all launchers. Must be a power of 2.
 inline constexpr size_t kRingBufferSize = 8192;
 
-// ---------------------------------------------------------------------------
-// Shutdown signalling.
-//
-// The signal handler only stores into a namespace-scope lock-free atomic
-// flag (async-signal-safe); main() polls the flag. No statics are first-
-// touched inside the handler and no separate barrier instances exist.
-// ---------------------------------------------------------------------------
 inline std::atomic<bool> g_shutdown{false};
 static_assert(std::atomic<bool>::is_always_lock_free,
               "signal handler needs a lock-free flag to be async-signal-safe");
@@ -47,9 +35,14 @@ inline void await_shutdown() {
   std::cout << "Shutdown signal received" << std::endl;
 }
 
-// ---------------------------------------------------------------------------
-// Common configuration
-// ---------------------------------------------------------------------------
+inline std::unique_ptr<reflex::IdleStrategy> make_idle_strategy() {
+  const char* env = std::getenv("REFLEX_IDLE");
+  if (env != nullptr && std::string(env) == "spin") {
+    return std::make_unique<reflex::NoopIdleStrategy>();
+  }
+  return std::make_unique<reflex::BackoffIdleStrategy>();
+}
+
 inline const std::vector<std::string>& default_okx_symbols() {
   static const std::vector<std::string> symbols{
       "BTC-USDT",      "ETH-USDT",      "LTC-USDT",      "SOL-USDT",
@@ -78,4 +71,4 @@ inline reflex::BlobConfig make_blob_config() {
   return reflex::BlobConfig(base, "wss://ws.okx.com:8443/ws/v5/public", api_path, default_okx_symbols());
 }
 
-}  // namespace launcher
+}

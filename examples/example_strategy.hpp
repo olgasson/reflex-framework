@@ -1,17 +1,3 @@
-// examples/example_strategy.hpp
-//
-// SimpleQuoterStrategy — a minimal but complete strategy showing how to wire
-// the framework pieces together:
-//
-//   * consume market data           (Strategy::on_l1_update / on_trade)
-//   * place / replace / cancel      (AlgoOrderManagement::send_pending*)
-//   * react to exchange responses   (on_accepted / on_executed / ...)
-//   * track position and PnL        (RiskEngine, FIFO accounting)
-//
-// Logic: join the best bid and best ask with one post-only order each,
-// re-pricing whenever the top of book moves, and stop quoting a side once
-// inventory exceeds a cap. This is a demo of the framework API, not a
-// profitable strategy.
 #pragma once
 
 #include <cmath>
@@ -26,8 +12,8 @@ namespace reflex::examples {
 struct SimpleQuoterConfig {
   int32_t instrument_id = 0;
   int32_t account = 0;
-  int64_t quote_size = 1'00000000;        // 1 contract, fixed-point 1e8
-  double max_position_contracts = 10.0;   // stop quoting a side beyond this
+  int64_t quote_size = 1'00000000;
+  double max_position_contracts = 10.0;
 };
 
 class SimpleQuoterStrategy final : public Strategy {
@@ -38,7 +24,6 @@ class SimpleQuoterStrategy final : public Strategy {
     register_as_listener();
   }
 
-  // --- Market data ----------------------------------------------------------
 
   void on_l1_update(const L1UpdateEvent& e) override {
     if (e.instrument_id_ != cfg_.instrument_id) return;
@@ -54,7 +39,6 @@ class SimpleQuoterStrategy final : public Strategy {
   void on_l2_update(const L2UpdateEvent&) override {}
   void on_trade(const TradeEvent&) override {}
 
-  // --- Order-management callbacks -------------------------------------------
 
   void on_accepted(const Order&, const AcceptedEvent& e) override {
     if (bid_.order_id == e.order_id_) bid_.working = true;
@@ -62,7 +46,7 @@ class SimpleQuoterStrategy final : public Strategy {
   }
 
   void on_rejected(const Order&, const RejectedEvent& e) override {
-    clear_if_ours(e.order_id_);  // e.g. post-only would have crossed; requote on next tick
+    clear_if_ours(e.order_id_);
   }
 
   void on_executed(const Order&, const ExecutedEvent& e) override {
@@ -70,12 +54,12 @@ class SimpleQuoterStrategy final : public Strategy {
     const double px = static_cast<double>(e.last_price_) / 1e8;
     const double dir = (e.side_ == Side::Buy) ? 1.0 : -1.0;
     position_contracts_ += dir * qty;
-    risk_.on_fill({e.side_, qty, px, /*taker=*/false, e.timestamp_ns_});
+    risk_.on_fill({e.side_, qty, px, false, e.timestamp_ns_});
     ++fills_;
 
     Quote& q = (e.side_ == Side::Buy) ? bid_ : ask_;
     q.filled += e.last_quantity_;
-    if (q.filled >= q.qty) q = Quote{};  // fully filled -> slot free to requote
+    if (q.filled >= q.qty) q = Quote{};
   }
 
   void on_replace_accepted(const Order&, const ReplaceAcceptedEvent& e) override {
@@ -83,9 +67,6 @@ class SimpleQuoterStrategy final : public Strategy {
     if (ask_.order_id == e.order_id_) { ask_.price = ask_.pending_price; ask_.working = true; }
   }
   void on_replace_rejected(const Order&, const ReplaceRejectedEvent& e) override {
-    // The exchange kept the ORIGINAL order resting (e.g. the new price would
-    // have crossed post-only). Resume quoting at the old price — leaving
-    // working=false here would silence that side forever.
     if (bid_.order_id == e.order_id_) bid_.working = true;
     if (ask_.order_id == e.order_id_) ask_.working = true;
   }
@@ -94,7 +75,6 @@ class SimpleQuoterStrategy final : public Strategy {
   }
   void on_cancel_rejected(const Order&, const CancelRejectedEvent&) override {}
 
-  // --- Reporting -------------------------------------------------------------
 
   const RiskEngine& risk_engine() const { return risk_; }
   double position_contracts() const { return position_contracts_; }
@@ -103,15 +83,13 @@ class SimpleQuoterStrategy final : public Strategy {
  private:
   struct Quote {
     int64_t order_id = 0;
-    int64_t price = 0;          // price the order is resting at
-    int64_t pending_price = 0;  // price requested by an in-flight replace
+    int64_t price = 0;
+    int64_t pending_price = 0;
     int64_t qty = 0;
     int64_t filled = 0;
     bool working = false;
   };
 
-  // Keep one post-only order joined to `target_price`; replace it when the
-  // book moves; withdraw it when inventory on that side is capped.
   void quote_side(Quote& q, Side side, int64_t target_price) {
     const bool capped = (side == Side::Buy)
         ? position_contracts_ >= cfg_.max_position_contracts
@@ -120,12 +98,12 @@ class SimpleQuoterStrategy final : public Strategy {
     if (capped) {
       if (q.order_id != 0 && q.working) {
         om_->send_pending_cancel(q.order_id);
-        q.working = false;  // cancel in flight; slot cleared in on_cancel_accepted
+        q.working = false;
       }
       return;
     }
 
-    if (q.order_id == 0) {  // nothing resting -> place a fresh quote
+    if (q.order_id == 0) {
       const int64_t oid = om_->send_pending(cfg_.instrument_id, side, cfg_.quote_size,
                                             target_price, OrderType::Limit, TimeInForce::Gtc,
                                             cfg_.account, ExecInst::ParticipateDontInitiate);
@@ -133,14 +111,11 @@ class SimpleQuoterStrategy final : public Strategy {
       return;
     }
 
-    if (q.working && q.price != target_price) {  // book moved -> re-price
-      // Amend semantics: quantity is the TOTAL order quantity, so leaves after
-      // the replace = quote_size - filled. Keep `filled` as-is (resetting it
-      // would double-count the earlier fills against the same order).
+    if (q.working && q.price != target_price) {
       om_->send_pending_replace(q.order_id, cfg_.instrument_id, target_price,
                                 cfg_.quote_size);
-      q.pending_price = target_price;  // q.price updates only on replace-accept
-      q.working = false;  // becomes true again in on_replace_accepted/_rejected
+      q.pending_price = target_price;
+      q.working = false;
     }
   }
 
@@ -159,4 +134,4 @@ class SimpleQuoterStrategy final : public Strategy {
   uint64_t fills_ = 0;
 };
 
-}  // namespace reflex::examples
+}

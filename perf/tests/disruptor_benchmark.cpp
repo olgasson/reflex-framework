@@ -35,25 +35,16 @@ void pin_thread_to_core(int core_id) {
 }
 #else
 void pin_thread_to_core(int) {
-  // Not supported on this platform
 }
 #endif
 
 inline void cpu_relax() {
-// #if defined(__x86_64__) || defined(_M_X64)
-//   _mm_pause();
-// #elif defined(__aarch64__)
-//   __asm__ __volatile__("yield");
-// #else
-//   sched_yield();
-// #endif
 }
 
 struct alignas(64)IntEvent {
   uint32_t value = 0;
 };
 
-// Add this event handler class
 class IntEventHandler : public Disruptor::IEventHandler<IntEvent> {
 private:
   std::atomic<uint64_t>& counter_;
@@ -72,10 +63,10 @@ public:
         std::cout << "======= DISRUPTOR LIBRARY COMPARISON BENCHMARK =======" << std::endl;
         std::cout << "Running on " << std::thread::hardware_concurrency() << " logical cores" << std::endl;
 
-        const int iterations = 100000000; // 100 million operations
-        const int BUFFER_SIZE = 1024 * 64; // 64K buffer
+        const int iterations = 100000000;
+        const int BUFFER_SIZE = 1024 * 64;
         const uint64_t EXPECTED_SUM = static_cast<uint64_t>(iterations) * (iterations + 1) / 2;
-        const int NUM_RUNS = 1; // Multiple runs for statistical analysis
+        const int NUM_RUNS = 1;
 
         std::cout << "Buffer size: " << BUFFER_SIZE << " entries" << std::endl;
         std::cout << "Operations per test: " << iterations << std::endl;
@@ -90,23 +81,21 @@ public:
         std::vector<double> disruptor_times;
         std::vector<double> disruptorplus_times;
 
-        // Run multiple iterations of each benchmark
         for (int run = 1; run <= NUM_RUNS; ++run) {
             std::cout << "=== RUN " << run << " ===" << std::endl;
 
             double disruptor_time = runDisruptorSPSC(iterations, BUFFER_SIZE, EXPECTED_SUM);
             disruptor_times.push_back(disruptor_time);
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Brief pause between tests
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
             double disruptorplus_time = runDisruptorPlusSPSC(iterations, BUFFER_SIZE, EXPECTED_SUM);
             disruptorplus_times.push_back(disruptorplus_time);
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Brief pause between tests
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             std::cout << std::endl;
         }
 
-        // Statistical analysis
         printStatisticalSummary("DISRUPTOR", disruptor_times, iterations);
         printStatisticalSummary("DISRUPTORPLUS", disruptorplus_times, iterations);
 
@@ -130,21 +119,18 @@ private:
 
         ringBuffer->addGatingSequences({processor->sequence()});
 
-        // Consumer thread
         std::thread consumerThread([&processor]() {
             processor->run();
         });
 
         auto start = std::chrono::high_resolution_clock::now();
 
-        // Standardized data: values from 1 to iterations
         for (uint32_t i = 1; i <= static_cast<uint32_t>(iterations); ++i) {
             auto seq = ringBuffer->next();
             (*ringBuffer)[seq].value = i;
             ringBuffer->publish(seq);
         }
 
-        // Wait for expected sum
         while (counter.load(std::memory_order_relaxed) < expected_sum) {
             std::this_thread::yield();
         }
@@ -160,10 +146,9 @@ private:
     }
 
 
-
     double runDisruptorPlusSPSC(int iterations, int buffer_size, uint64_t expected_sum) {
       std::cout << "DISRUPTOR PLUS:" << std::endl;
-      const size_t bufferSize = buffer_size; // Must be power-of-two
+      const size_t bufferSize = buffer_size;
 
       disruptorplus::ring_buffer<IntEvent> buffer(bufferSize);
 
@@ -180,10 +165,8 @@ private:
           bool done = false;
           while (!done)
           {
-              // Wait until more items available
               disruptorplus::sequence_t available = claimStrategy.wait_until_published(nextToRead);
 
-              // Process all available items in a batch
               do
               {
                   auto& event = buffer[nextToRead];
@@ -194,7 +177,6 @@ private:
                   }
               } while (nextToRead++ != available);
 
-              // Notify producer we've finished consuming some items
               consumed.publish(available);
           }
       });
@@ -205,17 +187,13 @@ private:
       {
           for (uint32_t i = 1; i <= iterations; ++i)
           {
-              // Claim a slot in the ring buffer, waits if buffer is full
               disruptorplus::sequence_t seq = claimStrategy.claim_one();
 
-              // Write to the slot in the ring buffer
               buffer[seq].value = i;
 
-              // Publish the event to the consumer
               claimStrategy.publish(seq);
           }
 
-          // Publish the terminating event.
           disruptorplus::sequence_t seq = claimStrategy.claim_one();
           buffer[seq].value = 0;
           claimStrategy.publish(seq);
@@ -260,7 +238,6 @@ private:
         double median_time = sorted_times[sorted_times.size() / 2];
         double avg_time = std::accumulate(sorted_times.begin(), sorted_times.end(), 0.0) / sorted_times.size();
 
-        // Calculate standard deviation
         double variance = 0.0;
         for (double time : sorted_times) {
             variance += (time - avg_time) * (time - avg_time);

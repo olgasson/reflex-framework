@@ -4,7 +4,6 @@
 #include <chrono>
 
 namespace reflex {
-// constexpr disruptorplus::sequence_t INITIAL = static_cast<disruptorplus::sequence_t>(-1);
 
 LoggerComponent::LoggerComponent(
     const ComponentConfig& config,
@@ -16,7 +15,6 @@ LoggerComponent::LoggerComponent(
     , logger_barrier_(std::move(logger_barrier))
     , claim_strategy_(std::move(claim_strategy)) {
 
-  // Create the message slot reader
   reader_ = std::make_unique<MessageSlotReader>(log_buffer_, claim_strategy_, logger_barrier_);
 
   reader_->register_handler(MessageType::Pending, [this](const MessageSlot& slot) {
@@ -99,7 +97,6 @@ LoggerComponent::LoggerComponent(
       logger_->info("{}", fmt::streamed(event));
   });
 
-  // Set default handler for unknown message types
   reader_->set_default_handler([this](const MessageSlot& slot) {
       logger_->error("Unknown message type: {}", static_cast<int>(slot.get_type()));
   });

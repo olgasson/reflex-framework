@@ -1,7 +1,3 @@
-// tests/test_binary_reader.cpp
-//
-// BinaryReader / MultiFileBinaryReader EOF-sentinel behavior (header-only and
-// unreadable files) and a binary_splitter -> binary_reader round trip.
 
 #include "backtest/binary_reader.hpp"
 #include "backtest/binary_splitter.hpp"
@@ -10,6 +6,7 @@
 #include "messages.hpp"
 
 #include <gtest/gtest.h>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -45,11 +42,19 @@ MessageSlot make_trade(int64_t ts, int32_t instrument_id, int64_t price) {
   return slot;
 }
 
+template <typename Event>
+MessageSlot slot_with_timestamp(int64_t timestamp_ns) {
+  MessageSlot slot;
+  auto* event = new (slot.raw_data()) Event();
+  event->timestamp_ns_ = timestamp_ns;
+  return slot;
+}
+
 std::string write_capture(const std::string& name, const std::vector<MessageSlot>& slots) {
   const std::string path = (std::filesystem::temp_directory_path() / name).string();
   std::FILE* f = std::fopen(path.c_str(), "wb");
   EXPECT_NE(f, nullptr);
-  FileHeader header{};  // default ctor sets magic + version
+  FileHeader header{};
   header.message_slot_size_ = sizeof(MessageSlot);
   EXPECT_EQ(std::fwrite(&header, sizeof(header), 1, f), 1u);
   for (const auto& slot : slots) {
@@ -59,7 +64,7 @@ std::string write_capture(const std::string& name, const std::vector<MessageSlot
   return path;
 }
 
-}  // namespace
+}
 
 TEST(BinaryReaderTest, GetHeaderThrowsBeforeOpen) {
   BinaryReader reader("/nonexistent/reflex_no_such_file.bin");
@@ -97,7 +102,6 @@ TEST(MultiFileBinaryReaderTest, SkipsUnreadableAndHeaderOnlyTrailingFiles) {
 
   MultiFileBinaryReader reader({valid, missing, empty});
 
-  // Peek/read the three real messages; timestamps must agree with the peek.
   for (int i = 0; i < 3; ++i) {
     ASSERT_TRUE(reader.has_more_data());
     const int64_t peeked = reader.peek_next_timestamp();
@@ -105,19 +109,115 @@ TEST(MultiFileBinaryReaderTest, SkipsUnreadableAndHeaderOnlyTrailingFiles) {
     ASSERT_NE(reader.read_next_message(), nullptr);
   }
 
-  // Remaining paths are unreadable/header-only: the reader must say so, not
-  // promise phantom data (which used to null-deref in the engine).
   EXPECT_FALSE(reader.has_more_data());
   EXPECT_TRUE(reader.is_end_of_files());
   EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
   EXPECT_EQ(reader.read_next_message(), nullptr);
 }
 
+TEST(BinaryReaderTest, PeekNextTimestampHandlesAuxiliaryMarketDataEvents) {
+  const int64_t mark_ts = 1'700'000'000'000'000'001;
+  const int64_t funding_ts = 1'700'000'000'000'000'002;
+  const int64_t open_interest_ts = 1'700'000'000'000'000'003;
+
+  const auto path = write_capture("reflex_reader_aux_events.bin",
+                                  {slot_with_timestamp<MarkPriceEvent>(mark_ts),
+                                   slot_with_timestamp<FundingRateEvent>(funding_ts),
+                                   slot_with_timestamp<OpenInterestEvent>(open_interest_ts)});
+
+  BinaryReader reader(path);
+  ASSERT_TRUE(reader.open());
+
+  EXPECT_EQ(reader.peek_next_timestamp(), mark_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::MarkPriceEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), funding_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::FundingRateEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), open_interest_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::OpenInterestEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
+  reader.close();
+  std::filesystem::remove(path);
+}
+
+TEST(BinaryReaderTest, PeekNextTimestampHandlesLiquidationEvents) {
+  const int64_t liq_ts = 1'700'000'000'000'000'004;
+  const int64_t trade_ts = 1'700'000'000'000'000'005;
+
+  MessageSlot liq_slot;
+  auto* liq = new (liq_slot.raw_data()) LiquidationEvent();
+  liq->timestamp_ns_ = liq_ts;
+  liq->exchange_timestamp_ns_ = 1'699'999'999'000'000'000;
+  liq->instrument_id_ = 42;
+  liq->exchange_ = Exchange::Okx;
+  liq->side_ = Side::Sell;
+  liq->price_ = 9'910'00000000LL;
+  liq->quantity_ = 1'200'000LL;
+  liq->cumulative_quantity_ = 1'400'000LL;
+  liq->average_price_ = 9'905'00000000LL;
+
+  const auto path = write_capture("reflex_reader_liquidation.bin",
+                                  {liq_slot, slot_with_timestamp<TradeEvent>(trade_ts)});
+
+  BinaryReader reader(path);
+  ASSERT_TRUE(reader.open());
+
+  EXPECT_EQ(reader.peek_next_timestamp(), liq_ts);
+
+  const MessageSlot* slot = reader.read_next_message();
+  ASSERT_NE(slot, nullptr);
+  ASSERT_EQ(slot->get_type(), MessageType::LiquidationEvent);
+  const auto& decoded = slot->as<LiquidationEvent>();
+  EXPECT_EQ(decoded.timestamp_ns_, liq_ts);
+  EXPECT_EQ(decoded.instrument_id_, 42);
+  EXPECT_EQ(decoded.exchange_, Exchange::Okx);
+  EXPECT_EQ(decoded.side_, Side::Sell);
+  EXPECT_EQ(decoded.price_, 9'910'00000000LL);
+  EXPECT_EQ(decoded.quantity_, 1'200'000LL);
+  EXPECT_EQ(decoded.cumulative_quantity_, 1'400'000LL);
+  EXPECT_EQ(decoded.average_price_, 9'905'00000000LL);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), trade_ts);
+  ASSERT_EQ(reader.read_next_message()->get_type(), MessageType::TradeEvent);
+
+  EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
+  reader.close();
+  std::filesystem::remove(path);
+}
+
+TEST(MultiFileBinaryReaderTest, TimestampMergeInterleavesIndependentlySortedFiles) {
+  const int64_t base = 1'700'000'000'000'000'000LL;
+  const auto a = write_capture("reflex_multi_merge_a.bin",
+                               {make_l1(base + 1'000, 1, 100, 101),
+                                make_l1(base + 3'000, 1, 100, 101)});
+  const auto b = write_capture("reflex_multi_merge_b.bin",
+                               {make_l1(base + 2'000, 2, 100, 101)});
+  const auto empty = write_capture("reflex_multi_merge_empty.bin", {});
+
+  MultiFileBinaryReader reader({a, b, empty}, true);
+  std::vector<int64_t> seen;
+  while (reader.has_more_data()) {
+    const int64_t peeked = reader.peek_next_timestamp();
+    const MessageSlot* slot = reader.read_next_message();
+    ASSERT_NE(slot, nullptr);
+    EXPECT_EQ(slot->as<L1UpdateEvent>().timestamp_ns_, peeked);
+    seen.push_back(peeked);
+  }
+  EXPECT_EQ(seen, (std::vector<int64_t>{base + 1'000, base + 2'000, base + 3'000}));
+  EXPECT_EQ(reader.peek_next_timestamp(), INT64_MAX);
+  EXPECT_EQ(reader.read_next_message(), nullptr);
+
+  std::filesystem::remove(a);
+  std::filesystem::remove(b);
+  std::filesystem::remove(empty);
+}
+
 TEST(BinarySplitterTest, SplitAndReadBackRoundTrip) {
   reflex::AssetInfoManager::initialize();
   const int64_t base = 1'700'000'000'000'000'000LL;
 
-  // Interleaved two-instrument capture.
   std::vector<MessageSlot> slots;
   for (int i = 0; i < 10; ++i) {
     const int32_t instr = (i % 2 == 0) ? 1 : 2;
@@ -141,15 +241,12 @@ TEST(BinarySplitterTest, SplitAndReadBackRoundTrip) {
   EXPECT_EQ(stats.total_events, slots.size());
   EXPECT_EQ(stats.total_instruments, 2u);
 
-  // Read each instrument's chunks back and compare against the source slots,
-  // byte for byte and in original order.
   for (const uint32_t instr : {1u, 2u}) {
     ASSERT_TRUE(stats.instrument_files.count(instr));
     MultiFileBinaryReader reader(stats.instrument_files.at(instr));
 
     size_t matched = 0;
     for (const auto& original : slots) {
-      // Select this instrument's slots from the interleaved input.
       const int32_t original_instr = (original.get_type() == MessageType::TradeEvent)
                                          ? original.as<TradeEvent>().instrument_id_
                                          : original.as<L1UpdateEvent>().instrument_id_;

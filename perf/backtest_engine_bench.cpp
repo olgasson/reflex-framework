@@ -1,15 +1,3 @@
-// perf/backtest_engine_bench.cpp
-//
-// Micro-benchmark for the BackTestEngine data path (file read -> latency queues
-// -> strategy delivery). Uses a no-op strategy so we measure the engine
-// plumbing rather than strategy/model cost, over synthetic data shaped to keep
-// a realistic ~3ms backlog resident in the market-data queue.
-//
-// The order-sensitive checksum is a determinism guard: any change that altered
-// delivery order/content would change it. Use it to prove B-1..B-4 are
-// behavior-neutral (identical checksum before vs after).
-//
-// Usage: backtest_engine_bench [num_events] [repeats]
 
 #include <chrono>
 #include <cstdint>
@@ -31,16 +19,15 @@ using namespace reflex::backtest;
 
 namespace {
 
-// No-op strategy: folds each delivered event into an order-sensitive checksum.
 class NoopStrategy final : public Strategy {
  public:
   NoopStrategy(ClockInterface* clock, TimerManager* tm) : Strategy(clock, tm, nullptr) {}
 
-  uint64_t checksum = 1469598103934665603ULL;  // FNV-1a offset basis
+  uint64_t checksum = 1469598103934665603ULL;
   uint64_t count = 0;
 
   inline void fold(uint64_t v) {
-    checksum = (checksum ^ v) * 1099511628211ULL;  // FNV-1a step (order-sensitive)
+    checksum = (checksum ^ v) * 1099511628211ULL;
     ++count;
   }
 
@@ -57,7 +44,6 @@ class NoopStrategy final : public Strategy {
     fold(static_cast<uint64_t>(e.price_));
   }
 
-  // OM callbacks never fire (the no-op strategy sends no orders).
   void on_accepted(const Order&, const AcceptedEvent&) override {}
   void on_rejected(const Order&, const RejectedEvent&) override {}
   void on_replace_accepted(const Order&, const ReplaceAcceptedEvent&) override {}
@@ -67,9 +53,6 @@ class NoopStrategy final : public Strategy {
   void on_executed(const Order&, const ExecutedEvent&) override {}
 };
 
-// Write a synthetic REFX file: num_events MessageSlots (cycling L1/L2/trade)
-// with timestamps spaced 1us apart, so at 3ms latency ~3000 events stay resident
-// in the market-data queue.
 std::string write_synthetic_file(uint64_t num_events) {
   std::string path = "/tmp/reflex_engine_bench.bin";
   std::FILE* f = std::fopen(path.c_str(), "wb");
@@ -79,17 +62,17 @@ std::string write_synthetic_file(uint64_t num_events) {
   }
 
   reflex::FileHeader header{};
-  header.magic_number_ = 0x52454658;  // "REFX"
+  header.magic_number_ = 0x52454658;
   header.version_ = 1;
   header.message_slot_size_ = sizeof(MessageSlot);
   std::fwrite(&header, sizeof(header), 1, f);
 
-  const int64_t base_ts = 1'700'000'000'000'000'000LL;  // ns
-  const int32_t instrument_id = 10301;                  // BTC-USDT-SWAP
+  const int64_t base_ts = 1'700'000'000'000'000'000LL;
+  const int32_t instrument_id = 10301;
 
   MessageSlot slot;
   for (uint64_t i = 0; i < num_events; ++i) {
-    const int64_t ts = base_ts + static_cast<int64_t>(i) * 1000;  // 1us apart
+    const int64_t ts = base_ts + static_cast<int64_t>(i) * 1000;
     switch (i % 3) {
       case 0: {
         auto* e = new (slot.raw_data()) L1UpdateEvent();
@@ -127,7 +110,7 @@ std::string write_synthetic_file(uint64_t num_events) {
   return path;
 }
 
-}  // namespace
+}
 
 int main(int argc, char** argv) {
   AssetInfoManager::initialize();
@@ -143,7 +126,7 @@ int main(int argc, char** argv) {
   uint64_t last_count = 0;
 
   for (int r = 0; r < repeats; ++r) {
-    BackTestEngineConfig cfg;  // default 3ms latencies
+    BackTestEngineConfig cfg;
     auto engine = std::make_unique<BackTestEngine>(cfg);
     TimerManager tm;
     auto strat = std::make_shared<NoopStrategy>(engine->get_clock().get(), &tm);

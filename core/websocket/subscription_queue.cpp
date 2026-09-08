@@ -13,11 +13,10 @@ SubscriptionQueue::SubscriptionQueue(TimerManager& tm,
 void SubscriptionQueue::enqueue(Task task)
 {
   queue_.push(std::move(task));
-  if (!timer_armed_)                 // no timer in flight, kick-start chain
+  if (!timer_armed_)
     arm_next_timer();
 }
 
-/* ------------------------------------------------------------------ */
 
 void SubscriptionQueue::arm_next_timer()
 {
@@ -28,7 +27,7 @@ void SubscriptionQueue::arm_next_timer()
 
   timer_manager_.add_timer(
       fire_time,
-      -1,                     // one-shot
+      -1,
       [this]() { process_next(); });
 }
 
@@ -57,4 +56,4 @@ void SubscriptionQueue::process_next()
   }
 }
 
-} // namespace reflex
+}
