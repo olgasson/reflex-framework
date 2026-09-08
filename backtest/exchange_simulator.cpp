@@ -1,4 +1,3 @@
-// backtest/exchange_simulator.cpp
 
 #include "backtest/exchange_simulator.hpp"
 #include "asset_info_manager.hpp"
@@ -33,7 +32,7 @@ double fixed_to_double(int64_t value) {
 const char* queue_model_to_csv(ExchangeSimulator::QueueModel model) {
   return model == ExchangeSimulator::QueueModel::Optimistic ? "Optimistic" : "Pessimistic";
 }
-}  // namespace
+}
 
 ExchangeSimulator::ExchangeSimulator(std::shared_ptr<ClockInterface> clock,
                    ExchangeResponseHandler* response_handler
@@ -200,11 +199,6 @@ void ExchangeSimulator::write_quote_lifecycle_row(const char* event_type,
 
 void ExchangeSimulator::process_l1_update(const L1UpdateEvent& event) {
   order_book_manager_.process_l1_update(event);
-  // Opt-in: the top-of-book stream is real-time, so the touch level's
-  // displayed size is observed at event granularity here, while a depth diff
-  // stream samples it periodically. Running the same queue accounting on each
-  // L1 observation exposes intra-interval touch churn, and is the only way the
-  // Optimistic cap can act at all on an L1-only tape.
   if (queue_accounting_on_l1_) {
     const auto* book_state =
         order_book_manager_.get_incremental_book(event.instrument_id_);
@@ -215,33 +209,18 @@ void ExchangeSimulator::process_l1_update(const L1UpdateEvent& event) {
 }
 
 void ExchangeSimulator::process_l2_update(const L2UpdateEvent& event) {
-    // Maintain external book
   order_book_manager_.process_l2_update(event);
 
   auto it = resting_.find(event.instrument_id_);
   if (it == resting_.end()) return;
   Book& book = it->second;
 
-  // A SNAPSHOT resync clears BOTH sides and rebuilds them across many
-  // messages. While that is in flight the book is partially rebuilt, so a
-  // level we rest on reads as empty and looks fully cancelled -- which would
-  // hand resting orders many messages of phantom credit, and would let the
-  // optimistic model cap queue position against an unbuilt book. Suppress
-  // both, and invalidate the baselines so the first SETTLED observation
-  // re-seeds from the rebuilt book instead of diffing across the gap.
-  // (The feed marks each side's snapshot batch separately while the book
-  // clears both, so trusting the batch flags here would be unsound; the
-  // book's own settled state is the reliable signal.)
   const auto* book_state =
       order_book_manager_.get_incremental_book(event.instrument_id_);
   const bool settled =
       book_state != nullptr && book_state->ready() && !book_state->in_snapshot();
   const bool is_snapshot = event.snapshot_ == BooleanEnum::TRUE;
   if (!settled || is_snapshot) {
-    // A completed snapshot is an authoritative re-anchor, not evidence that
-    // the intervening depth disappeared ahead of us. On its final message,
-    // seed from the completed book so the first subsequent delta is measured
-    // normally. While it is incomplete, invalidate the baselines.
     for (auto& [px, lvl] : book.bids) {
       lvl.last_displayed = settled
                                ? displayed_depth_at(event.instrument_id_,
@@ -277,20 +256,6 @@ void ExchangeSimulator::apply_queue_accounting(int32_t instrument_id) {
   }
 }
 
-// One settled observation of a level we rest on. Diffs the displayed depth
-// against the previous observation, nets out volume that has actually
-// traded there since, and then advances our queue position by the configured
-// model:
-//   Optimistic: queue_ahead <= displayed depth. This is a PHYSICAL bound
-//     (volume ahead of us can never exceed the others' displayed volume at
-//     our price), so it never manufactures advancement beyond what the book
-//     proves; it is still called "optimistic" because every reduction that
-//     forces the bound is attributed ahead of us.
-//   Pessimistic + alpha: bounded cancellation attribution (x^alpha) on the
-//     unexplained reduction.
-// Every order records its pre-observation position so a print that arrives
-// inside the netting window and was already reflected in this observation is
-// applied to that position (see consume_level_anticipated).
 void ExchangeSimulator::observe_level(int32_t instrument_id, Side side,
                                       int64_t price, LevelFifo& level,
                                       int64_t now_ns) {
@@ -302,16 +267,8 @@ void ExchangeSimulator::observe_level(int32_t instrument_id, Side side,
   int64_t cancelled = 0;
   if (previous > 0 && displayed < previous) {
     const int64_t reduction = previous - displayed;
-    // Displayed depth already reflects executions; subtracting the traded
-    // volume is what keeps a print from being counted as a cancellation too.
     cancelled = reduction - std::min(reduction, traded);
   }
-  // A netting episode is open while an unexplained reduction observed inside
-  // the window has not yet been matched by prints. The pre-observation
-  // position is snapshotted ONCE at episode start; further observations in
-  // the same episode accumulate their reductions but must not move the
-  // snapshot, otherwise delayed prints are applied to an already-capped
-  // position and the queue advances twice.
   const bool episode_open =
       trade_netting_window_ns_ > 0 && level.unexplained_recent > 0 &&
       now_ns - level.last_obs_ts_ns <= trade_netting_window_ns_;
@@ -344,15 +301,9 @@ void ExchangeSimulator::observe_level(int32_t instrument_id, Side side,
   }
 
   if (cancel_credit_alpha_ <= 0.0 || cancelled <= 0 || previous <= 0) return;
-  // Market-by-price data cannot locate a cancellation in the FIFO, so
-  // x^alpha maps our queue percentile to a bounded probability that the
-  // removed volume was ahead of us.
   for (int32_t i = level.head; i >= 0; i = arena_[i].next) {
     RestingOrder& order = arena_[i];
     if (order.queue_ahead <= 0) continue;
-    // queue_ahead can exceed the last displayed depth after a collapse, so
-    // clamp the percentile into [0,1]. Alpha changes WHERE cancellations are
-    // attributed, never their total quantity.
     const double percentile = std::clamp(
         static_cast<double>(order.queue_ahead) /
             static_cast<double>(previous),
@@ -373,35 +324,22 @@ void ExchangeSimulator::observe_level(int32_t instrument_id, Side side,
 
 
 void ExchangeSimulator::process_trade_event(const TradeEvent& event) {
-  // The book manager's trade heuristic subtracts the print from the best
-  // level. With real-time L1 accounting that level is refreshed by the feed
-  // itself, and a print that arrives AFTER the L1 update already reflecting
-  // it would be subtracted twice, leaving displayed depth too low until the
-  // next update and letting the cap over-advance every order at that price.
-  // The feed is authoritative in that mode.
   if (!queue_accounting_on_l1_) {
     order_book_manager_.process_trade_event(event);
   }
 
   auto it = resting_.find(event.instrument_id_);
   if (it == resting_.end()) return;
-  Book& book = it->second;  // reference, not copy
+  Book& book = it->second;
 
   const int64_t trade_price = event.price_;
-  int64_t remaining = event.size_;   // contracts that actually traded in this print = our fill budget
+  int64_t remaining = event.size_;
   if (remaining <= 0) return;
   const int64_t now_ns = clock_->epoch_nanos();
 
-  // event.side_ is the AGGRESSOR side. A counterfactual order was absent from
-  // the historical book, so a print through its price proves price priority
-  // but not unlimited demand. One finite print budget is shared across every
-  // eligible simulated level in price-time order. At a strictly better level,
-  // the through print proves the historical queue ahead has gone; the
-  // remaining observed quantity can then fill us, partially if necessary.
   if (event.side_ == Side::Buy) {
-    // Aggressive BUY lifts asks -> can fill our resting ASKS priced <= trade_price (best/lowest first).
     for (auto lvl = book.asks.begin(); lvl != book.asks.end(); ) {
-      if (lvl->first > trade_price) break;          // asks low->high: remaining levels are worse-priced
+      if (lvl->first > trade_price) break;
       if (lvl->first < trade_price) {
         fill_level_through(lvl->second, remaining, now_ns, event);
       }
@@ -412,9 +350,8 @@ void ExchangeSimulator::process_trade_event(const TradeEvent& event) {
       else ++lvl;
     }
   } else if (event.side_ == Side::Sell) {
-    // Aggressive SELL hits bids -> can fill our resting BIDS priced >= trade_price (best/highest first).
     for (auto lvl = book.bids.begin(); lvl != book.bids.end(); ) {
-      if (lvl->first < trade_price) break;          // bids high->low: remaining levels are worse-priced
+      if (lvl->first < trade_price) break;
       if (lvl->first > trade_price) {
         fill_level_through(lvl->second, remaining, now_ns, event);
       }
@@ -474,13 +411,11 @@ void ExchangeSimulator::on_pending(const PendingEvent& event) {
   }
 
   if (event.order_type_ == OrderType::Market) {
-    // immediate-or-reject semantics in many venues; here we fully sweep
     handle_market_order(event, now_ns);
     return;
   }
 
   const bool post_only = (event.exec_inst_ == ExecInst::ParticipateDontInitiate);
-  // Limit
   if (post_only) {
     auto best_bid = order_book_manager_.get_best_bid(event.instrument_id_);
     auto best_ask = order_book_manager_.get_best_ask(event.instrument_id_);
@@ -509,9 +444,6 @@ void ExchangeSimulator::on_pending(const PendingEvent& event) {
     }
     rest_post_only_limit(event, now_ns);
   } else {
-    // Non post-only limit: fill the marketable part against the displayed
-    // book — never through the limit price — then cancel (IOC/FOK) or rest
-    // (GTC) the remainder.
     handle_limit_order(event, now_ns);
   }
 }
@@ -546,11 +478,6 @@ void ExchangeSimulator::on_pending_replace(const PendingReplaceEvent& e) {
   const int32_t instrument_id = arena_[idx].instrument_id;
   const Side side = arena_[idx].side;
   const int64_t old_price = arena_[idx].price;
-  // Amend semantics: e.quantity_ is the new TOTAL order quantity, so
-  // leaves = new_qty - cum_filled. Setting leaves = new_qty outright would let
-  // an order fill its earlier executions all over again (overfill). A total
-  // at or below what has already filled leaves nothing to work and is
-  // rejected without touching the resting order.
   const int64_t cumulative_filled =
       arena_[idx].quantity - arena_[idx].leaves;
   if (e.quantity_ <= cumulative_filled) {
@@ -576,7 +503,6 @@ void ExchangeSimulator::on_pending_replace(const PendingReplaceEvent& e) {
   }
   auto& book = resting_[instrument_id];
 
-  // Post-only crossing check against external TOB
   const int64_t best_bid = order_book_manager_.get_best_bid(instrument_id);
   const int64_t best_ask = order_book_manager_.get_best_ask(instrument_id);
 
@@ -593,14 +519,11 @@ void ExchangeSimulator::on_pending_replace(const PendingReplaceEvent& e) {
                               e.request_id_);
     send_replace_rejected(e.order_id_, e.request_id_, RejectReason::PostOnly,
                           now_ns);
-    return; // keep original resting order + index intact
+    return;
   }
 
-  // Same invariant as placement: re-pricing behind the touch on an L1-only book
-  // would re-initialize queue_ahead from fabricated zero depth.
   require_l2_provenance_for_behind_touch(instrument_id, side, e.price_);
 
-  // Detach from the old price level (O(1) via the intrusive list).
   bool found = false;
   if (side == Side::Buy) {
     auto old_lvl_it = book.bids.find(old_price);
@@ -628,12 +551,11 @@ void ExchangeSimulator::on_pending_replace(const PendingReplaceEvent& e) {
     send_replace_rejected(e.order_id_, e.request_id_,
                           RejectReason::OrderUnknown, now_ns);
     logger_->debug("Replace rejected: indexed but not found in book, order {}", e.order_id_);
-    rest_index_.erase(it);          // clean up bad index to avoid future confusion
+    rest_index_.erase(it);
     arena_.release(idx);
     return;
   }
 
-  // Re-price and re-queue at the back of the new level (loses time priority).
   RestingOrder& ro = arena_[idx];
   ro.price = e.price_;
   ro.quantity = e.quantity_;
@@ -657,7 +579,6 @@ void ExchangeSimulator::on_pending_replace(const PendingReplaceEvent& e) {
   } else {
     link_back(book.asks[ro.price], idx);
   }
-  // rest_index_ entry stays valid (same arena index, same order_id).
 
   send_replace_accepted(e.order_id_, e.request_id_, instrument_id, now_ns);
   write_quote_lifecycle_row("replace_accepted", now_ns, ro,
@@ -668,7 +589,6 @@ void ExchangeSimulator::on_pending_replace(const PendingReplaceEvent& e) {
 void ExchangeSimulator::on_pending_cancel(const PendingCancelEvent& e) {
   const int64_t now_ns = clock_->epoch_nanos();
 
-  // Use the index to find the exact order in O(1).
   auto it = rest_index_.find(e.order_id_);
   if (it == rest_index_.end()) {
     write_quote_lifecycle_row("cancel_rejected",
@@ -699,7 +619,6 @@ void ExchangeSimulator::on_pending_cancel(const PendingCancelEvent& e) {
   auto book_it = resting_.find(instrument_id);
   if (book_it == resting_.end()) {
     const RestingOrder order_snapshot = arena_[idx];
-    // Inconsistent state: index exists, book missing
     rest_index_.erase(it);
     arena_.release(idx);
     write_quote_lifecycle_row("cancel_rejected", now_ns, order_snapshot,
@@ -741,7 +660,6 @@ void ExchangeSimulator::on_pending_cancel(const PendingCancelEvent& e) {
     send_cancel_accepted(e.order_id_, e.request_id_,
                          CancelReason::UserRequest, now_ns);
   } else {
-    // Index said it existed but we didn't find it — already cleaned up above.
     write_quote_lifecycle_row("cancel_rejected", now_ns, order_snapshot,
                               order_snapshot.leaves, "order_unknown",
                               e.request_id_);
@@ -775,12 +693,10 @@ void ExchangeSimulator::send_ioc_remainder_cancel(const PendingEvent& e,
 void ExchangeSimulator::handle_market_order(const PendingEvent& e, int64_t now_ns) {
   send_accepted(e.order_id_, e.instrument_id_, now_ns);
 
-  // Market order: sweep with no price bound.
   const int64_t no_bound = (e.side_ == Side::Buy) ? INT64_MAX : INT64_MIN;
   const int64_t qty_left = sweep_displayed_book(e, no_bound, now_ns);
 
   if (qty_left > 0) {
-    // Remainder unfilled (book too thin or not ready) — cancel it (IOC-style).
     send_ioc_remainder_cancel(e, qty_left, now_ns);
   }
 }
@@ -788,27 +704,18 @@ void ExchangeSimulator::handle_market_order(const PendingEvent& e, int64_t now_n
 void ExchangeSimulator::handle_limit_order(const PendingEvent& e, int64_t now_ns) {
   send_accepted(e.order_id_, e.instrument_id_, now_ns);
 
-  // Sweep only levels at-or-better than our limit — a buy below the market
-  // must never fill through its own limit price.
   const int64_t qty_left = sweep_displayed_book(e, e.price_, now_ns);
   if (qty_left <= 0) return;
 
-  // IOC (and FOK, which is not modelled beyond its immediacy) cancels the
-  // remainder with a system cancel; a GTC remainder rests in the book with
-  // normal queue position.
   const bool immediate = e.time_in_force_ == TimeInForce::Ioc ||
                          e.time_in_force_ == TimeInForce::Fok;
   if (immediate) {
     send_ioc_remainder_cancel(e, qty_left, now_ns);
   } else {
-    rest_order(e, qty_left, /*post_only=*/false, now_ns);
+    rest_order(e, qty_left, false, now_ns);
   }
 }
 
-// Taker sweep of the displayed book, bounded by limit_price. Fill budget is the
-// currently displayed depth; consumed depth is removed from the simulated book
-// so back-to-back takers cannot reuse the same liquidity before the next
-// market-data event refreshes it.
 int64_t ExchangeSimulator::sweep_displayed_book(const PendingEvent& e, int64_t limit_price,
                                                 int64_t now_ns) {
   int64_t qty_left = static_cast<int64_t>(e.quantity_);
@@ -816,36 +723,30 @@ int64_t ExchangeSimulator::sweep_displayed_book(const PendingEvent& e, int64_t l
 
   auto* incr = order_book_manager_.get_incremental_book(instr);
   if (!incr || !incr->ready()) {
-    return qty_left;  // nothing displayed to fill against
+    return qty_left;
   }
 
-  // Record fills first, then mutate the book: bids()/asks() return the book's
-  // cached level vectors, which must not be invalidated mid-iteration.
   sweep_fills_.clear();
   if (e.side_ == Side::Buy) {
-    // Sweep the asks (lowest to highest price), never above our limit.
     for (const auto& level : incr->asks()) {
       if (qty_left <= 0 || level.price > limit_price) break;
       const int64_t trade_qty = std::min(qty_left, level.quantity);
       if (trade_qty <= 0) continue;
-      send_executed(e.order_id_, e.side_, instr, level.price, trade_qty, now_ns, /*taker=*/true);
+      send_executed(e.order_id_, e.side_, instr, level.price, trade_qty, now_ns, true);
       sweep_fills_.push_back({level.price, trade_qty});
       qty_left -= trade_qty;
     }
   } else {
-    // Sweep the bids (highest to lowest price), never below our limit.
     for (const auto& level : incr->bids()) {
       if (qty_left <= 0 || level.price < limit_price) break;
       const int64_t trade_qty = std::min(qty_left, level.quantity);
       if (trade_qty <= 0) continue;
-      send_executed(e.order_id_, e.side_, instr, level.price, trade_qty, now_ns, /*taker=*/true);
+      send_executed(e.order_id_, e.side_, instr, level.price, trade_qty, now_ns, true);
       sweep_fills_.push_back({level.price, trade_qty});
       qty_left -= trade_qty;
     }
   }
 
-  // Our taker fills consumed displayed liquidity — decrement the simulated book
-  // (apply_trade drains the level exactly like an external print would).
   for (const auto& fill : sweep_fills_) {
     TradeEvent t{};
     t.instrument_id_ = instr;
@@ -862,10 +763,6 @@ int64_t ExchangeSimulator::sweep_displayed_book(const PendingEvent& e, int64_t l
 
 void ExchangeSimulator::link_back(LevelFifo& level, int32_t idx) {
   RestingOrder& o = arena_[idx];
-  // Seed the cancel-credit baseline the moment this level first hosts one of
-  // our orders. Without it the FIRST observation after placement is spent
-  // establishing the baseline, so the earliest cancellations -- the window
-  // where queue position matters most -- are silently uncredited.
   if (level.last_displayed < 0) {
     level.last_displayed = o.displayed_depth_at_placement;
     level.traded_since_obs = 0;
@@ -884,9 +781,6 @@ void ExchangeSimulator::unlink(LevelFifo& level, int32_t idx) {
   o.next = o.prev = -1;
 }
 
-// Behind-touch queue simulation needs real L2 depth: on an L1-only book,
-// displayed_depth_at() returns 0 away from the touch, silently fabricating a
-// front-of-queue position. Enforced on BOTH the placement and replace paths.
 void ExchangeSimulator::require_l2_provenance_for_behind_touch(
     int32_t instrument_id, Side side, int64_t price) const {
   const auto* external_book = order_book_manager_.get_incremental_book(instrument_id);
@@ -906,26 +800,21 @@ void ExchangeSimulator::require_l2_provenance_for_behind_touch(
 void ExchangeSimulator::rest_post_only_limit(const PendingEvent& e, int64_t now_ns) {
   require_l2_provenance_for_behind_touch(e.instrument_id_, e.side_, e.price_);
   send_accepted(e.order_id_, e.instrument_id_, now_ns);
-  rest_order(e, static_cast<int64_t>(e.quantity_), /*post_only=*/true, now_ns);
+  rest_order(e, static_cast<int64_t>(e.quantity_), true, now_ns);
 }
 
-// Rest `leaves` of an order in our book. Does NOT send an accept — callers
-// acknowledge the order themselves (a marketable limit is accepted before its
-// sweep, so only the remainder reaches here).
 void ExchangeSimulator::rest_order(const PendingEvent& e, int64_t leaves, bool post_only,
                                    int64_t now_ns) {
-  const int32_t idx = arena_.alloc();          // no further arena_ growth below -> ro stays valid
+  const int32_t idx = arena_.alloc();
   RestingOrder& ro = arena_[idx];
   ro.order_id     = e.order_id_;
   ro.instrument_id= e.instrument_id_;
   ro.side         = e.side_;
   ro.price        = e.price_;
-  ro.quantity     = static_cast<int64_t>(e.quantity_);   // taker fills before resting = quantity - leaves
+  ro.quantity     = static_cast<int64_t>(e.quantity_);
   ro.leaves       = leaves;
   ro.post_only    = post_only;
   ro.ts_ns        = now_ns;
-  // Aggregate-L2 queue position: start behind (queue_init_fraction of) the market volume
-  // already displayed at our price. (0 if we improve the book / open a new level -> first in line.)
   ro.displayed_depth_at_placement = displayed_depth_at(ro.instrument_id, ro.side, ro.price);
   const int64_t touch = ro.side == Side::Buy
                             ? order_book_manager_.get_best_bid(ro.instrument_id)
@@ -948,18 +837,10 @@ void ExchangeSimulator::rest_order(const PendingEvent& e, int64_t leaves, bool p
   }
   write_quote_lifecycle_row("accepted", now_ns, ro, static_cast<int64_t>(e.quantity_), "");
 
-  // index by id
   rest_index_[ro.order_id] = idx;
 }
 
 
-// A print at our exact price. If a book observation inside the netting window
-// already showed an unexplained reduction at this level, the leading part of
-// this print (up to that reduction) is the execution the observation already
-// reflected: it consumed the FRONT of the level, so it is applied to each
-// order's pre-observation position rather than draining the post-observation
-// position a second time. The remainder is fresh volume and is netted against
-// the next observation as before.
 void ExchangeSimulator::consume_at_price(LevelFifo& level, int64_t& remaining,
                                          int64_t print_size, int64_t now_ns,
                                          const TradeEvent& trigger) {
@@ -972,11 +853,8 @@ void ExchangeSimulator::consume_at_price(LevelFifo& level, int64_t& remaining,
   if (anticipated > 0) {
     int64_t budget = anticipated;
     consume_level_anticipated(level, budget, now_ns, trigger);
-    remaining -= anticipated;  // these units traded here, ahead of or into us
+    remaining -= anticipated;
   }
-  // Volume that genuinely traded at this price AFTER the last observation,
-  // netted against the next observed depth reduction so cancel credit never
-  // double-counts it.
   level.traded_since_obs += std::max<int64_t>(0, print_size - anticipated);
   consume_level(level, remaining, now_ns, trigger);
 }
@@ -984,7 +862,7 @@ void ExchangeSimulator::consume_at_price(LevelFifo& level, int64_t& remaining,
 void ExchangeSimulator::pop_front_filled(LevelFifo& level, int32_t idx) {
   RestingOrder& o = arena_[idx];
   rest_index_.erase(o.order_id);
-  const int32_t next = o.next;        // pop front of the intrusive FIFO
+  const int32_t next = o.next;
   level.head = next;
   if (next >= 0) arena_[next].prev = -1;
   else           level.tail = -1;
@@ -1002,16 +880,10 @@ void ExchangeSimulator::consume_level_anticipated(LevelFifo& level,
     o.queue_ahead_pre_obs -= eat;
     o.traded_ahead += eat;
     anticipated -= eat;
-    // The print proves the true position is at most the pre-observation
-    // position less what it consumed; the observation's own bound stands.
     if (o.queue_ahead > o.queue_ahead_pre_obs) o.queue_ahead = o.queue_ahead_pre_obs;
-    // Keep provenance closed: initial = traded + credited + capped + queue.
     o.capped_advancement = std::max<int64_t>(
         0, o.initial_queue_ahead - o.queue_ahead - o.traded_ahead -
                o.credited_cancellation);
-    // That market depth was queued ahead of every successor at this level
-    // too (each order's position was measured against the same displayed
-    // depth), so propagate the consumption instead of charging it again.
     for (int32_t j = o.next; eat > 0 && j >= 0; j = arena_[j].next) {
       RestingOrder& s = arena_[j];
       const int64_t s_eat = std::min(eat, s.queue_ahead_pre_obs);
@@ -1039,24 +911,17 @@ void ExchangeSimulator::consume_level_anticipated(LevelFifo& level,
   }
 }
 
-// Consume one price level's FIFO with a trade budget: trade volume first drains the market
-// depth queued ahead of each order, then fills the order (possibly partially) at its limit.
 void ExchangeSimulator::consume_level(LevelFifo& level, int64_t& remaining, int64_t now_ns, const TradeEvent& trigger) {
   while (level.head >= 0 && remaining > 0) {
     const int32_t idx = level.head;
     RestingOrder& o = arena_[idx];
 
-    // (1) trade volume first eats the market depth queued ahead of us
     const int64_t eat = std::min(remaining, o.queue_ahead);
     if (eat > 0) {
       o.queue_ahead -= eat;
       o.queue_ahead_pre_obs = std::max<int64_t>(0, o.queue_ahead_pre_obs - eat);
       o.traded_ahead += eat;
       remaining     -= eat;
-      // That market depth was queued ahead of every successor at this level
-      // too (each order's queue_ahead was measured against the same displayed
-      // depth), so propagate the consumption — otherwise the shared budget is
-      // double-charged and fills are underestimated.
       for (int32_t j = o.next; j >= 0; j = arena_[j].next) {
         RestingOrder& s = arena_[j];
         const int64_t s_eat = std::min(eat, s.queue_ahead);
@@ -1065,9 +930,8 @@ void ExchangeSimulator::consume_level(LevelFifo& level, int64_t& remaining, int6
         s.traded_ahead += s_eat;
       }
     }
-    if (o.queue_ahead > 0 || remaining <= 0) return;  // still behind the queue, or budget spent
+    if (o.queue_ahead > 0 || remaining <= 0) return;
 
-    // (2) we are now at the front of the queue -> fill (possibly partial) at OUR limit price
     const int64_t fill = std::min(remaining, o.leaves);
     send_executed(o.order_id, o.side, o.instrument_id, o.price, fill, now_ns);
     o.leaves  -= fill;
@@ -1090,14 +954,11 @@ void ExchangeSimulator::consume_level(LevelFifo& level, int64_t& remaining, int6
     if (fully_filled) {
       pop_front_filled(level, idx);
     } else {
-      return;                       // partial fill -> order keeps resting at the front
+      return;
     }
   }
 }
 
-// A print strictly through this level proves the historical queue ahead has
-// gone. Because our order is counterfactual, only the print's remaining
-// observed quantity is a defensible fill budget; it may fill us partially.
 void ExchangeSimulator::fill_level_through(LevelFifo& level,
                                            int64_t& remaining,
                                            int64_t now_ns,
@@ -1129,19 +990,16 @@ void ExchangeSimulator::fill_level_through(LevelFifo& level,
   }
 }
 
-// Displayed (aggregate) market depth at an exact price on the given side; 0 if no such level.
-// Levels are price-sorted (bids high->low, asks low->high) so we break as soon as we pass the
-// target price -> O(distance-from-top), not O(depth). Hot path under the Optimistic queue model.
 int64_t ExchangeSimulator::displayed_depth_at(int32_t instrument_id, Side side, int64_t price) {
   const auto* book = order_book_manager_.get_incremental_book(instrument_id);
   if (!book || !book->ready()) return 0;
   if (side == Side::Buy) {
-    for (const auto& lvl : book->bids()) {         // high -> low
+    for (const auto& lvl : book->bids()) {
       if (lvl.price == price) return lvl.quantity;
-      if (lvl.price < price) break;                // passed our price; not present
+      if (lvl.price < price) break;
     }
   } else {
-    for (const auto& lvl : book->asks()) {         // low -> high
+    for (const auto& lvl : book->asks()) {
       if (lvl.price == price) return lvl.quantity;
       if (lvl.price > price) break;
     }
@@ -1149,8 +1007,6 @@ int64_t ExchangeSimulator::displayed_depth_at(int32_t instrument_id, Side side, 
   return 0;
 }
 
-// Initial queue volume ahead of a freshly-placed/re-priced order = queue_init_fraction of
-// displayed depth (1.0 = back of queue, the conservative default; lower to calibrate fill rate).
 int64_t ExchangeSimulator::initial_queue_ahead(int32_t instrument_id, Side side, int64_t price) {
   const int64_t depth = displayed_depth_at(instrument_id, side, price);
   if (queue_init_fraction_ >= 1.0) return depth;
@@ -1159,19 +1015,14 @@ int64_t ExchangeSimulator::initial_queue_ahead(int32_t instrument_id, Side side,
 }
 
 
-// ---------------- Event plumbing ----------------
-
 void ExchangeSimulator::send_accepted(int64_t order_id,
                                       int32_t instrument_id,
                                       int64_t now_ns) {
 
-  // Create response slot and use placement new (like RingBufferWriter does)
   MessageSlot response_slot;
 
-  // Use placement new to construct AcceptedEvent directly in the slot
   auto* const accepted = new (response_slot.raw_data()) AcceptedEvent();
 
-  // Fill the response fields
   accepted->order_id_ = order_id;
   accepted->timestamp_ns_ = now_ns;
   const int64_t best_bid = order_book_manager_.get_best_bid(instrument_id);
@@ -1279,8 +1130,6 @@ void ExchangeSimulator::send_executed(int64_t order_id, Side side, int32_t instr
   executed->instrument_id_ = instrument_id;
   executed->last_price_ = px;
   executed->last_quantity_ = qty;
-  // Taker fills carry the instrument's taker fee (ppb of notional) as a
-  // commission in quote currency, mirroring what a live fill would report.
   if (const auto* asset =
           reflex::AssetInfoManager::get_by_instrument_id(instrument_id);
       taker && asset != nullptr) {
@@ -1303,4 +1152,4 @@ void ExchangeSimulator::send_executed(int64_t order_id, Side side, int32_t instr
   response_handler_->on_exchange_response(response_slot);
 }
 
-} // namespace reflex::backtest
+}

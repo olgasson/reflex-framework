@@ -20,7 +20,7 @@ void print_usage(const char* prog, std::ostream& os = std::cout) {
             << "  --file-list <path>        Read input file paths from a text file (one per line)\n";
 }
 
-}  // namespace
+}
 
 int main(int argc, char** argv) {
   std::vector<std::string> data_files;
@@ -84,7 +84,6 @@ int main(int argc, char** argv) {
     data_files.push_back(arg);
   }
 
-  // Load files from --file-list if specified
   if (!file_list_path.empty()) {
     std::ifstream file_list(file_list_path);
     if (!file_list) {
@@ -93,12 +92,11 @@ int main(int argc, char** argv) {
     }
     std::string line;
     while (std::getline(file_list, line)) {
-      // Trim whitespace
       size_t start = line.find_first_not_of(" \t\r\n");
       size_t end = line.find_last_not_of(" \t\r\n");
       if (start != std::string::npos && end != std::string::npos) {
         std::string path = line.substr(start, end - start + 1);
-        if (!path.empty() && path[0] != '#') {  // Skip empty lines and comments
+        if (!path.empty() && path[0] != '#') {
           data_files.push_back(path);
         }
       }
@@ -118,7 +116,6 @@ int main(int argc, char** argv) {
 
   std::filesystem::create_directories(output_path);
 
-  // Initialise asset info so we can resolve IDs to names
   reflex::AssetInfoManager::initialize();
 
   reflex::BinarySplitter splitter(data_files);

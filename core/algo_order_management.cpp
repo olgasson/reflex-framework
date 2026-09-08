@@ -1,4 +1,3 @@
-// algo_order_management.cpp
 #include "domain/algo_order_management.hpp"
 
 #include "logger_factory.hpp"
@@ -25,7 +24,7 @@ size_t reject_reason_index(RejectReason reason) noexcept {
              : static_cast<size_t>(RejectReason::Unknown);
 }
 
-}  // namespace
+}
 
 AlgoOrderManagement::AlgoOrderManagement(std::shared_ptr<OrderWriter> writer, bool keep_filled_and_dead)
     : writer_(std::move(writer)),
@@ -46,7 +45,6 @@ int64_t AlgoOrderManagement::send_pending(const int32_t instrument_id, const Sid
                                        const TimeInForce time_in_force,
                                        const int32_t account,
                                        const ExecInst exec_inst) {
-  // Generate order ID and get order from pool
   const int64_t order_id = generate_order_id();
   Order* order = order_pool_->acquire();
   order->reset();
@@ -64,12 +62,10 @@ int64_t AlgoOrderManagement::send_pending(const int32_t instrument_id, const Sid
   order->order_state_ = OrderState::New;
   order->order_wait_state_ = OrderWaitState::Pending;
 
-  // Store order
   order_store_[order_id] = order;
   seen_execution_ids_.erase(order_id);
 
   logger_->debug("Sending pending: {}", fmt::streamed(*order));
-  // Delegate to RingBufferWriter (transport layer)
   writer_->send_pending(*order);
 
   return order_id;
@@ -83,7 +79,6 @@ void AlgoOrderManagement::send_pending_cancel(const int64_t order_id, const Canc
     return;
   }
 
-  // A cancel supersedes any replace still in flight for this order.
   release_replace_shadow(order_id);
   clear_request_id(*order);
   order->request_id_ = generate_order_id();
@@ -95,7 +90,7 @@ void AlgoOrderManagement::send_pending_cancel(const int64_t order_id, const Canc
   writer_->send_pending_cancel(*order, priority);
 }
 
-bool AlgoOrderManagement::send_pending_replace(const int64_t order_id, const int32_t /*instrument_id*/, const int64_t price,
+bool AlgoOrderManagement::send_pending_replace(const int64_t order_id, const int32_t , const int64_t price,
                                                const int64_t quantity) {
   Order* original = get_order(order_id);
   if (!original) {
@@ -107,9 +102,6 @@ bool AlgoOrderManagement::send_pending_replace(const int64_t order_id, const int
     return false;
   }
 
-  // Supersede an in-flight replace: its pooled shadow is released here and
-  // its (now stale) request id is retired, so the earlier response can no
-  // longer resolve this newer request.
   release_replace_shadow(order_id);
   original->order_state_ = OrderState::Working;
   original->order_wait_state_ = OrderWaitState::PendingReplace;
@@ -124,9 +116,6 @@ bool AlgoOrderManagement::send_pending_replace(const int64_t order_id, const int
   replacement->request_id_ = original->request_id_;
   replacement->price_ = price;
   replacement->quantity_ = quantity;
-  // Replacement leaves = new order quantity minus what has already filled on
-  // the original. Clamped at 0: filled beyond the new quantity means the
-  // replacement is effectively fully filled.
   const int64_t filled_quantity = original->quantity_ - original->leaves_quantity_;
   replacement->leaves_quantity_ = std::max<int64_t>(quantity - filled_quantity, 0);
   replacement->order_state_ = OrderState::Working;
@@ -171,7 +160,6 @@ void AlgoOrderManagement::on_rejected(const RejectedEvent* event) {
   }
   order->order_state_ = OrderState::Rejected;
   order->order_wait_state_ = OrderWaitState::None;
-  // Handle order cleanup if not keeping filled/dead orders
   logger_->debug("on_rejected {}", fmt::streamed(*event));
 
   for (const auto listener : listeners_) {
@@ -216,14 +204,9 @@ void AlgoOrderManagement::on_replace_accepted(const ReplaceAcceptedEvent* event)
     return;
   }
   const int64_t original_order_id = original->order_id_;
-  // Leaves = new order quantity minus what has filled on the original so far
-  // (fills between the replace request and its acceptance land on the
-  // original).
   const int64_t cumulative_filled =
       original->quantity_ - original->leaves_quantity_;
   if (replacement->quantity_ <= cumulative_filled) {
-    // The venue cannot have accepted a total below what already filled; the
-    // order is kept as-is rather than reported as a zero-leaves working order.
     logger_->error(
         "Ignoring impossible replace-accepted response for order {}: total "
         "quantity {} does not exceed cumulative fill {}",
@@ -242,7 +225,6 @@ void AlgoOrderManagement::on_replace_accepted(const ReplaceAcceptedEvent* event)
   remove_request_id(event->request_id_);
   replacement->request_id_ = 0;
 
-  // Replace original with updated replacement
   order_store_[original_order_id] = replacement;
   order_store_.erase(-original_order_id);
   order_pool_->release(original);
@@ -310,9 +292,6 @@ void AlgoOrderManagement::on_cancel_accepted(const CancelAcceptedEvent* event) {
     record_cancel_correlation_failure(event->request_id_);
     return;
   }
-  // Two kinds of cancel legitimately carry no request id: System is the
-  // simulator/IOC completion path; Exchange is an authoritative unsolicited
-  // venue terminal update that may close a live GTC order.
   const bool unsolicited_system_cancel =
       event->cancel_reason_ == CancelReason::System && event->request_id_ == 0 &&
       (order->order_type_ == OrderType::Market ||
@@ -411,9 +390,6 @@ void AlgoOrderManagement::on_executed(const ExecutedEvent* event) {
     }
   }
 
-  // Fail closed on an overfill rather than clamping: a fill larger than
-  // leaves means local and venue state have diverged, and applying it would
-  // silently mis-state the position.
   if (event->last_quantity_ <= 0 ||
       event->last_quantity_ > order->leaves_quantity_) {
     logger_->error(
@@ -568,4 +544,4 @@ void AlgoOrderManagement::discard_terminal_fill_request(
     terminal_fill_requests_.erase(it);
   }
 }
-}  // namespace reflex
+}

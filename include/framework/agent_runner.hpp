@@ -12,7 +12,6 @@
 
 namespace reflex {
 
-// Forward declarations
 class AgentTerminationException : public std::exception {
 public:
     explicit AgentTerminationException(const std::string& message) : message_(message) {}
@@ -40,10 +39,6 @@ public:
         }
     }
 
-    // Start the agent on a new thread that the runner owns. Returns a reference
-    // to the owned thread; the caller must NOT join it — close() does that.
-    // (The previous version stored the address of a by-value-returned local,
-    // which dangled the instant the function returned.)
     static std::thread& start_on_thread(AgentRunner& runner) {
         runner.thread_ = std::thread([&runner]() {
             runner.run();
@@ -51,7 +46,6 @@ public:
         return runner.thread_;
     }
 
-    // Static method with custom thread creation
     template<typename ThreadFactory>
     static std::thread& start_on_thread(AgentRunner& runner, ThreadFactory&& factory) {
         runner.thread_ = factory([&runner]() {
@@ -72,9 +66,6 @@ public:
         return thread_;
     }
 
-    // Thread body: exceptions must never escape here — this runs as the raw
-    // std::thread entry point, and an escaping exception would call
-    // std::terminate. All failures are routed to error_handler_ instead.
     void run() {
         try {
             agent_.on_start();
@@ -125,7 +116,6 @@ private:
             int work_count = agent_.do_work();
             idle_strategy_.idle(work_count);
             
-            // Check for thread interruption equivalent
             if (work_count <= 0 && should_stop()) {
                 is_running_ = false;
             }
@@ -151,10 +141,7 @@ private:
         }
     }
 
-    // Simple check for stopping condition - can be enhanced
     bool should_stop() const {
-        // In a more complete implementation, this could check for 
-        // thread interruption signals or other stop conditions
         return false;
     }
 
@@ -167,7 +154,7 @@ private:
     Agent& agent_;
     std::atomic<bool> is_running_;
     std::atomic<bool> is_closed_;
-    std::thread thread_; // Owned; default-constructed (empty) unless started via start_on_thread()
+    std::thread thread_;
 };
 
-} // namespace reflex
+}

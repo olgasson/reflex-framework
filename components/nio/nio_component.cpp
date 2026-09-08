@@ -1,4 +1,3 @@
-// core/nio_component.cpp
 #include "../../include/components/nio/nio_component.hpp"
 
 #include <chrono>
@@ -11,9 +10,9 @@ int64_t steady_now_ns() {
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
-constexpr uint64_t kSampleEvery = 64;      // measure 1 in 64 cycles
-constexpr int64_t kStatsLogIntervalNs = 10'000'000'000;  // 10 s
-}  // namespace
+constexpr uint64_t kSampleEvery = 64;
+constexpr int64_t kStatsLogIntervalNs = 10'000'000'000;
+}
 
 NIOComponent::NIOComponent(const ComponentConfig& config)
     : BaseComponent(config) {
@@ -28,7 +27,6 @@ void NIOComponent::on_start() {
   BaseComponent::on_start();
   logger_->info("Starting NIO component with {} child components", child_components_.size());
 
-  // Start all child components
   for (auto& component : child_components_) {
     component->on_start();
   }
@@ -37,7 +35,6 @@ void NIOComponent::on_start() {
 void NIOComponent::on_close() {
   logger_->info("Closing NIO component");
 
-  // Close all child components
   for (auto& component : child_components_) {
     try {
       component->on_close();
@@ -56,7 +53,6 @@ int NIOComponent::on_do_work() {
   int64_t slowest_child_ns = 0;
   int64_t slowest_child_index = -1;
 
-  // Fan out work to all child components
   for (std::size_t index = 0; index < child_components_.size(); ++index) {
     const int64_t child_start_ns = sampled ? steady_now_ns() : 0;
     try {
@@ -113,4 +109,4 @@ int NIOComponent::on_do_work() {
 }
 
 
-} // namespace reflex
+}

@@ -14,18 +14,16 @@
 
 namespace reflex {
 
-// Forward declaration
 static int lws_callback_impl(struct lws* wsi, enum lws_callback_reasons reason,
                              void* user, void* in, size_t len);
 
-// Protocol definition
 static struct lws_protocols protocols[] = {
     {
-        "reflex-client",          // protocol name
-        lws_callback_impl,        // callback function
+        "reflex-client",
+        lws_callback_impl,
         sizeof(WebsocketClient*),
-        4096 * 20,                // rx buffer size
-        0, nullptr, 0             // id, user, tx_packet_size
+        4096 * 20,
+        0, nullptr, 0
     },
     LWS_PROTOCOL_LIST_TERM
 };
@@ -41,7 +39,7 @@ WebsocketClient::WebsocketClient(const std::string& url, const std::string& cont
 
   free_stack_.reserve(kTxPoolSize);
   for (size_t i = 0; i < kTxPoolSize; ++i) {
-    free_stack_.push_back(kTxPoolSize - 1 - i);   // LIFO: [31, 30, 29, ..., 1, 0]
+    free_stack_.push_back(kTxPoolSize - 1 - i);
   }
 
 }
@@ -51,7 +49,6 @@ WebsocketClient::~WebsocketClient() {
 }
 
 void WebsocketClient::parse_url() {
-  // Simple URL parsing for wss://host:port/path
   size_t protocol_end = url_.find("://");
   if (protocol_end == std::string::npos) {
     throw std::invalid_argument("Invalid URL format");
@@ -86,7 +83,7 @@ void WebsocketClient::parse_url() {
 
 void WebsocketClient::create_context() {
   if (context_) {
-    return;  // Remove "Context already exists - skipping creation" log
+    return;
   }
 
   struct lws_context_creation_info info;
@@ -101,17 +98,12 @@ void WebsocketClient::create_context() {
   if (use_ssl_) {
     info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 
-    // Server certificates are verified for real: libwebsockets (built with
-    // LWS_SSL_CLIENT_USE_OS_CA_CERTS) loads OpenSSL's default verify paths,
-    // and as belt-and-braces we point it at the first system CA bundle we can
-    // find so verification also works when the linked OpenSSL has empty
-    // default paths (common with relocated/Homebrew builds).
     static constexpr const char* kCaBundlePaths[] = {
-        "/etc/ssl/cert.pem",                     // macOS system bundle
-        "/etc/ssl/certs/ca-certificates.crt",    // Debian/Ubuntu
-        "/etc/pki/tls/certs/ca-bundle.crt",      // RHEL/Fedora
-        "/opt/homebrew/etc/openssl@3/cert.pem",  // Homebrew (Apple Silicon)
-        "/usr/local/etc/openssl@3/cert.pem",     // Homebrew (Intel)
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/opt/homebrew/etc/openssl@3/cert.pem",
+        "/usr/local/etc/openssl@3/cert.pem",
     };
     for (const char* ca_path : kCaBundlePaths) {
       if (::access(ca_path, R_OK) == 0) {
@@ -162,8 +154,6 @@ void WebsocketClient::connect() {
   connect_info.userdata = this;
 
   if (use_ssl_) {
-    // Full certificate + hostname verification against the CA bundle loaded
-    // in create_context(). No self-signed or hostname-mismatch exemptions.
     connect_info.ssl_connection = LCCSCF_USE_SSL;
   }
 
@@ -196,24 +186,17 @@ void WebsocketClient::disconnect(bool hard_reset, std::string_view reason) {
     }
   } else {
     if (wsi_) {
-      // Detach ourselves and ask lws to actually close the wsi asynchronously.
-      // The context stays alive, but the connection is quiesced instead of
-      // lingering and firing callbacks into a client that thinks it is gone.
       lws_set_wsi_user(wsi_, nullptr);
       lws_set_timeout(wsi_, PENDING_TIMEOUT_USER_OK, LWS_TO_KILL_ASYNC);
       wsi_ = nullptr;
     }
   }
-  pfd_.fd = -1;  // drop the stale fd from the poll set
+  pfd_.fd = -1;
   reset_transfer_state();
   set_state(ConnectionState::DISCONNECTED);
 }
 
 void WebsocketClient::reset_transfer_state() {
-  // Return queued TX frames to the pool and forget any partial RX message;
-  // both belong to the connection that just went away. A websocket session
-  // owns every queued frame: never carry partially sent subscriptions, their
-  // completion callbacks, or a pending ping into the next connection.
   while (!pending_q_.empty()) {
     tx_pool_[pending_q_.front()].on_sent = {};
     free_stack_.push_back(pending_q_.front());
@@ -235,7 +218,7 @@ unsigned char* WebsocketClient::begin_frame(size_t len)
 
   size_t idx = free_stack_.back();
   free_stack_.pop_back();
-  tx_pool_[idx].len = len;               // provisional
+  tx_pool_[idx].len = len;
   return tx_pool_[idx].buf.data() + LWS_PRE;
 }
 
@@ -264,7 +247,6 @@ void WebsocketClient::end_frame(unsigned char* payload_ptr, size_t len)
 
 void WebsocketClient::get_poll_fds(std::vector<struct pollfd>& fds) {
   if (pfd_.fd >= 0) {
-    // reset revents every duty‑cycle
     pfd_.revents = 0;
     fds.push_back(pfd_);
   }
@@ -276,22 +258,16 @@ void WebsocketClient::service_ready_fds(const std::vector<struct pollfd>& fds) {
   int socket_fd = lws_get_socket_fd(wsi_);
   if (socket_fd < 0) return;
 
-  // Find our socket in the provided fds and service it
   for (const auto& fd : fds) {
     if (fd.fd == socket_fd && fd.revents != 0) {
       struct lws_pollfd pfd = {fd.fd, fd.events, fd.revents};
       lws_service_fd(context_, &pfd);
 #if defined(__linux__)
-      // Re-arm QUICKACK after every receive: our delayed ACK (~40ms) stalls
-      // the PEER's Nagle'd small writes - observed as a constant ~40-50ms
-      // plateau on order acks that our own TCP_NODELAY cannot fix (it
-      // governs our writes, not theirs). QUICKACK is transient on Linux, so
-      // it must be reapplied.
       const int quickack = 1;
       setsockopt(socket_fd, IPPROTO_TCP, TCP_QUICKACK, &quickack,
                  sizeof(quickack));
 #endif
-      return; // Exit immediately after servicing our socket
+      return;
     }
   }
 }
@@ -321,7 +297,7 @@ bool WebsocketClient::send_message_immediate(const std::string& msg,
     return false;
   }
 
-  std::memcpy(p, msg.data(), msg.size());     // **single** copy
+  std::memcpy(p, msg.data(), msg.size());
   if (on_sent) {
     for (auto& block : tx_pool_) {
       if (block.buf.data() + LWS_PRE == p) {
@@ -368,8 +344,6 @@ void WebsocketClient::set_state(ConnectionState new_state, std::string_view reas
 }
 
 void WebsocketClient::cleanup() {
-  // NOTE: lws_close_reason() is only meaningful from inside a callback, so it
-  // must not be called here; destroying the context tears the connection down.
   wsi_ = nullptr;
   pfd_.fd = -1;
 
@@ -390,9 +364,6 @@ static int lws_callback_impl(struct lws* wsi, enum lws_callback_reasons reason,
     WebsocketClient* client = nullptr;
     static auto ws_callback_logger = LoggerFactory::getLogger("WebsocketClient.Callback");
 
-    // Get client instance. Only the per-wsi user pointer is consulted: after a
-    // soft disconnect it is nulled, so stray callbacks from a quiescing wsi
-    // resolve to no client and are ignored (no lws_context_user fallback).
     if (wsi) {
         client = static_cast<WebsocketClient*>(lws_wsi_user(wsi));
     }
@@ -461,11 +432,7 @@ static int lws_callback_impl(struct lws* wsi, enum lws_callback_reasons reason,
 }
 
 
-
 void WebsocketClient::handle_client_established() {
-  // Nagle + delayed-ACK stalls burst-sent frames by ~40ms (observed as a
-  // constant ~40-50ms plateau on back-to-back order placements). Trading
-  // sockets always want immediate writes.
   const int socket_fd = lws_get_socket_fd(wsi_);
   if (socket_fd >= 0) {
     const int enable = 1;
@@ -481,7 +448,6 @@ void WebsocketClient::handle_client_established() {
     logger_->info("WebSocket peer address: {}", peer_address);
   }
   set_state(ConnectionState::CONNECTED);
-  // Reset ping / pong timers so we don't trigger an immediate timeout
   last_pong_time_nanos_ = nano_clock_.epoch_nanos();
   last_ping_time_nanos_ = nano_clock_.epoch_nanos();
   rx_buffer_.clear();
@@ -489,7 +455,6 @@ void WebsocketClient::handle_client_established() {
 }
 
 void WebsocketClient::add_handshake_header(const std::string& name, const std::string& value) {
-  // lws_add_http_header_by_name wants the name with a trailing colon.
   handshake_headers_.emplace_back(name + ":", value);
 }
 
@@ -507,26 +472,17 @@ int WebsocketClient::append_handshake_headers(struct lws* wsi, unsigned char** p
 
 void WebsocketClient::handle_client_receive(struct lws* wsi, const char* data, size_t len) {
   if (wsi != wsi_ || !message_callback_) {
-    return;  // stale callback from a quiescing connection, or no consumer
+    return;
   }
 
-  // A logical websocket message may arrive split across several RECEIVE
-  // callbacks (fragmented frames and/or rx-buffer-sized chunks). Only a
-  // complete message is handed to the consumer - partial JSON would just be
-  // dropped downstream.
   const bool is_final = lws_is_final_fragment(wsi) && lws_remaining_packet_payload(wsi) == 0;
 
   if (rx_dropping_) {
-    // Swallowing the tail of an oversized message; resync on message boundary.
     rx_dropping_ = !is_final;
     return;
   }
 
   if (rx_buffer_.empty() && is_final) {
-    // Fast path: complete message in a single chunk. Hand the raw
-    // libwebsockets rx buffer straight to the callback as a view - no copy;
-    // the view is only valid for the duration of the callback, which is
-    // exactly the contract the blob relies on.
     message_callback_(std::string_view(data, len));
     return;
   }
@@ -548,19 +504,16 @@ void WebsocketClient::handle_client_receive(struct lws* wsi, const char* data, s
 void WebsocketClient::handle_client_writeable()
 {
   if (!wsi_ || !is_connected()) {
-    return;  // soft-disconnected while a writeable callback was in flight
+    return;
   }
 
-  // A previous lws_write() was only partially accepted by the socket; lws
-  // buffered the remainder and flushes it itself. Submitting a new frame now
-  // would interleave payload bytes and corrupt the websocket stream.
   if (lws_partial_buffered(wsi_)) {
     lws_callback_on_writable(wsi_);
     return;
   }
 
   if (pending_q_.empty()) {
-    return;  // nothing to do
+    return;
   }
 
   const size_t idx = pending_q_.front();
@@ -573,10 +526,6 @@ void WebsocketClient::handle_client_writeable()
   free_stack_.push_back(idx);
 
   if (n < static_cast<int>(blk.len)) {
-    // Per lws semantics a short return is a fatal error for this connection
-    // (genuine backpressure is reported via lws_partial_buffered() instead).
-    // Flag ERROR here; the owner's state driver performs the hard reset
-    // outside this callback (destroying the context mid-callback is unsafe).
     logger_->error("lws_write failed (ret={}, len={})", n, blk.len);
     set_state(ConnectionState::ERROR, "lws_write short return");
     return;
@@ -584,7 +533,6 @@ void WebsocketClient::handle_client_writeable()
 
   if (on_sent) on_sent();
 
-  // Request another callback if more work pending or a partial is flushing
   if (!pending_q_.empty() || lws_partial_buffered(wsi_)) {
     lws_callback_on_writable(wsi_);
   }
@@ -615,13 +563,8 @@ void WebsocketClient::send_ping_if_needed(uint64_t now_nanos) {
 
   last_ping_time_nanos_ = now_nanos;
 
-  // OKX keepalive is the text "ping" / "pong" exchange; a ws control-frame
-  // ping is not honoured by the venue, so only the text ping is sent. Venues
-  // that reject unexpected text frames disable it via set_text_ping_enabled().
   if (!text_ping_enabled_) return;
 
-  // Paths may contain short-lived credentials (for example listen keys), so
-  // connection logs must never echo the full URL - log the host only.
   if (send_message_immediate("ping")) {
     logger_->info("WS text ping sent to {}", host_);
   } else {
@@ -648,4 +591,4 @@ void WebsocketClient::update_pong_timestamp() {
   last_pong_time_nanos_ = nano_clock_.epoch_nanos();
 }
 
-}  // namespace reflex
+}

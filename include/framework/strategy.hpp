@@ -19,29 +19,25 @@ class Strategy : public AlgoOrderManagementListener {
 
   virtual ~Strategy() = default;
 
-  // Lifecycle methods
   virtual void on_start() {}
   virtual void on_stop() {}
 
-  // Raw MarketData - PURE VIRTUAL (must be implemented)
   virtual void on_l1_update(const L1UpdateEvent& event) = 0;
   virtual void on_l2_update(const L2UpdateEvent& event) = 0;
   virtual void on_trade(const TradeEvent& event) = 0;
-  virtual void on_mark_price(const MarkPriceEvent& /*event*/) {}
-  virtual void on_funding_rate(const FundingRateEvent& /*event*/) {}
-  virtual void on_open_interest(const OpenInterestEvent& /*event*/) {}
-  virtual void on_liquidation(const LiquidationEvent& /*event*/) {}
+  virtual void on_mark_price(const MarkPriceEvent& ) {}
+  virtual void on_funding_rate(const FundingRateEvent& ) {}
+  virtual void on_open_interest(const OpenInterestEvent& ) {}
+  virtual void on_liquidation(const LiquidationEvent& ) {}
 
-  // OM callbacks - PURE VIRTUAL (must be implemented)
-  void on_accepted(const Order& /*order*/, const AcceptedEvent& event) override = 0;
-  void on_rejected(const Order& /*order*/, const RejectedEvent& event) override = 0;
-  void on_replace_accepted(const Order& /*replacement*/, const ReplaceAcceptedEvent& event) override = 0;
-  void on_replace_rejected(const Order& /*original*/, const ReplaceRejectedEvent& event) override = 0;
-  void on_cancel_accepted(const Order& /*order*/, const CancelAcceptedEvent& event) override = 0;
-  void on_cancel_rejected(const Order& /*order*/, const CancelRejectedEvent& event) override = 0;
-  void on_executed(const Order& /*order*/, const ExecutedEvent& event) override = 0;
+  void on_accepted(const Order& , const AcceptedEvent& event) override = 0;
+  void on_rejected(const Order& , const RejectedEvent& event) override = 0;
+  void on_replace_accepted(const Order& , const ReplaceAcceptedEvent& event) override = 0;
+  void on_replace_rejected(const Order& , const ReplaceRejectedEvent& event) override = 0;
+  void on_cancel_accepted(const Order& , const CancelAcceptedEvent& event) override = 0;
+  void on_cancel_rejected(const Order& , const CancelRejectedEvent& event) override = 0;
+  void on_executed(const Order& , const ExecutedEvent& event) override = 0;
 
-  // Getter for AlgoOrderManagement
   AlgoOrderManagement* get_order_management() const { return om_; }
 
  protected:
@@ -58,4 +54,4 @@ class Strategy : public AlgoOrderManagementListener {
 
 };
 
-}  // namespace reflex
+}

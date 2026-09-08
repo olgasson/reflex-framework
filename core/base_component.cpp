@@ -20,7 +20,6 @@ BaseComponent::BaseComponent(const ComponentConfig& config)
         nano_clock_(OffsetEpochNanoClock()) {
 
 
-  //logger setup
   logger_ = LoggerFactory::getLogger(component_name_);
 
   AssetInfoManager::initialize();
@@ -33,7 +32,6 @@ int BaseComponent::do_work() {
     case ComponentState::INITIALIZING: {
       logger_->info("Transitioning to state: {}", ComponentState::CONNECTING);
       
-      // Call the virtual callback for initializing state
       on_initializing();
       
       component_state_ = ComponentState::CONNECTING;
@@ -41,12 +39,8 @@ int BaseComponent::do_work() {
     }
 
     case ComponentState::CONNECTING: {
-      // Call the virtual callback for connecting state
       on_connecting();
 
-      // Components signal connect failure by setting component_state_ to
-      // FAILED from on_connecting() - respect it instead of overwriting it
-      // with RUNNING; the FAILED case runs on the next spin.
       if (component_state_ == ComponentState::FAILED) {
         break;
       }
@@ -59,23 +53,18 @@ int BaseComponent::do_work() {
     case ComponentState::RUNNING: {
       timer_manager_->check_scheduled_timers(nano_clock_.epoch_nanos());
 
-      // Call the virtual callback for running state
       on_running();
 
-      //fan out the work onto the individual sub-components?
       work_count += on_do_work();
       break;
     }
 
     case ComponentState::FAILED: {
-      // Log only on the transition into FAILED - do_work spins with a busy
-      // idle strategy and logging every spin would flood stderr.
       if (last_logged_state_ != ComponentState::FAILED) {
         logger_->error("Service lifecycle FAILED");
         last_logged_state_ = ComponentState::FAILED;
       }
 
-      // Call the virtual callback for failed state
       on_failed();
       break;
     }
@@ -86,7 +75,6 @@ int BaseComponent::do_work() {
         last_logged_state_ = ComponentState::DISCONNECTED;
       }
 
-      // Call the virtual callback for disconnected state
       on_disconnected();
       break;
     }
@@ -97,7 +85,6 @@ int BaseComponent::do_work() {
         last_logged_state_ = ComponentState::STOPPED;
       }
 
-      // Call the virtual callback for stopped state
       on_stopped();
       break;
     }

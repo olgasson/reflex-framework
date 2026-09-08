@@ -37,4 +37,4 @@ public:
   void clear() { events.clear(); }
 };
 
-} // namespace reflex::backtest
+}

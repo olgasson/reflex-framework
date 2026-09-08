@@ -6,7 +6,7 @@
 #include "component.hpp"
 #include "component_config.hpp"
 #include <spdlog/spdlog.h>
-#include <spdlog/fmt/ostr.h>   // for operator<< support
+#include <spdlog/fmt/ostr.h>
 
 #include "system_state.hpp"
 #include "../timer_manager.hpp"
@@ -21,7 +21,6 @@ public:
   void on_close() override;
   int do_work() override;
 
-  // Commander& get_commander() override;
   OffsetEpochNanoClock& get_nano_clock() override;
   TimerManager& get_timer_manager() override;
 
@@ -37,7 +36,6 @@ protected:
 
   virtual int on_do_work() { return 0; }
 
-  // State transition callbacks - can be overridden by derived classes
   virtual void on_initializing() {}
   virtual void on_connecting() {}
   virtual void on_running() {}
@@ -50,8 +48,6 @@ protected:
   ComponentState component_state_;
   SystemState system_state_;
 
-  // Last state a lifecycle message was logged for - lets terminal states
-  // (FAILED/DISCONNECTED/STOPPED) log once instead of on every do_work spin.
   ComponentState last_logged_state_ = ComponentState::INITIALIZING;
 
   ComponentConfig config_;

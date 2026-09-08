@@ -122,11 +122,10 @@ public:
   }
 
 
-
   static uint64_t now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
   }
 };
 
-} // namespace reflex::test
+}

@@ -13,7 +13,7 @@ inline bool is_true(BooleanEnum flag) {
 constexpr int64_t clamp_non_negative(int64_t value) {
   return value >= 0 ? value : 0;
 }
-} // namespace
+}
 
 IncrementalOrderBook::IncrementalOrderBook(std::size_t max_depth)
   : max_depth_(max_depth ? max_depth : 200) {}
@@ -84,7 +84,7 @@ auto lower_bound_price(Side& levels, bool is_bid, int64_t price) {
   };
   return std::lower_bound(levels.begin(), levels.end(), price, comp);
 }
-}  // namespace
+}
 
 void IncrementalOrderBook::set_level(bool is_bid, int64_t price, int64_t qty) {
   if (price <= 0) {
@@ -163,24 +163,16 @@ void IncrementalOrderBook::apply_l2_update(const L2UpdateEvent& event) {
     snapshot_seen_ask_ = snapshot_seen_ask_ || !is_bid;
   }
 
-  // Process level 1 (always present)
   set_level(is_bid, event.price_1_, event.size_1_);
 
-  // Process level 2 (if present)
   if (event.num_levels_ == 2) {
     set_level(is_bid, event.price_2_, event.size_2_);
   }
 
-  // A single message is complete by itself. A multi-message snapshot or delta
-  // becomes observable only at its last message.
   const bool is_batch = is_true(event.is_batch_message_);
   const bool is_last = is_true(event.is_last_batch_);
   const bool complete = !is_batch || is_last;
   if (is_snapshot) {
-    // Some venues publish bids and asks as separate batches, each with its own
-    // last marker. A snapshot replaces the whole book, so the bid-side last
-    // marker cannot make the half-built book observable or let the first ask
-    // message start a second snapshot that clears the bids again.
     if (complete && snapshot_seen_bid_ && snapshot_seen_ask_) {
       in_snapshot_ = false;
       in_batch_ = false;
@@ -215,11 +207,8 @@ void IncrementalOrderBook::apply_l1_update(const L1UpdateEvent& event) {
   set_level(true, event.bid_price_, event.bid_size_);
   set_level(false, event.offer_price_, event.offer_size_);
 
-  // A degraded touch proves every formerly better price is gone. Erase the
-  // whole traversed range; retaining only the intermediate levels would leave
-  // phantom queue depth behind the new touch.
   if (event.bid_price_ > 0 && prev_best_bid > 0 && prev_best_bid != event.bid_price_) {
-    if (event.bid_price_ < prev_best_bid) {  // Bid degraded
+    if (event.bid_price_ < prev_best_bid) {
       const auto new_best = std::find_if(
           bids_.begin(), bids_.end(), [&event](const Level& level) {
             return level.price <= event.bid_price_;
@@ -229,12 +218,10 @@ void IncrementalOrderBook::apply_l1_update(const L1UpdateEvent& event) {
         mark_dirty();
       }
     }
-    // else: bid improved, keep old level
   }
 
-  // Symmetrically, an ask degradation proves every formerly lower ask is gone.
   if (event.offer_price_ > 0 && prev_best_ask > 0 && prev_best_ask != event.offer_price_) {
-    if (event.offer_price_ > prev_best_ask) {  // Ask degraded
+    if (event.offer_price_ > prev_best_ask) {
       const auto new_best = std::find_if(
           asks_.begin(), asks_.end(), [&event](const Level& level) {
             return level.price >= event.offer_price_;
@@ -244,7 +231,6 @@ void IncrementalOrderBook::apply_l1_update(const L1UpdateEvent& event) {
         mark_dirty();
       }
     }
-    // else: ask improved, keep old level
   }
 
   prune_crossed_levels(event.bid_price_, event.offer_price_);
@@ -428,4 +414,4 @@ IncrementalOrderBook::Snapshot IncrementalOrderBook::snapshot() const {
   return snap;
 }
 
-} // namespace reflex::marketdata
+}

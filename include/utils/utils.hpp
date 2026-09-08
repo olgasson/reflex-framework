@@ -41,7 +41,6 @@ public:
       throw std::invalid_argument("routingNode name cannot be null or empty.");
     }
 
-    // Check if routing_node is blank (only whitespace)
     if (std::all_of(routing_node.begin(), routing_node.end(), ::isspace)) {
       return "";
     }

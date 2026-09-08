@@ -69,7 +69,7 @@ std::vector<CsvRow> read_csv(const std::filesystem::path& path) {
   return rows;
 }
 
-}  // namespace
+}
 
 class ExchangeSimulatorTest : public ::testing::Test {
 protected:
@@ -79,7 +79,6 @@ protected:
     sim = std::make_unique<ExchangeSimulator>(clock, handler.get());
   }
 
-  // Helper to create individual L2 update messages
   void send_l2_update(uint32_t instrument_id, Side side, double price, double quantity) {
     L2UpdateEvent l2;
     l2.instrument_id_ = instrument_id;
@@ -90,13 +89,10 @@ protected:
     l2.timestamp_ns_ = clock->epoch_nanos();
     l2.snapshot_ = BooleanEnum::FALSE;
     l2.num_levels_ = 1;
-    // Book only becomes ready() at batch end; without this best bid/ask read as 0
-    // and post-only crossing checks / queue-position lookups silently no-op.
     l2.is_last_batch_ = BooleanEnum::TRUE;
     sim->process_l2_update(l2);
   }
 
-  // Helper to create an external trade print (size = fill budget for resting orders)
   void send_trade(uint32_t instrument_id, Side aggressor_side, double price, double size) {
     TradeEvent trade{};
     trade.instrument_id_ = instrument_id;
@@ -120,20 +116,18 @@ protected:
   std::unique_ptr<ExchangeSimulator> sim;
 };
 
-// --- 1. Basic post-only accept / reject ----------------------
 
 TEST_F(ExchangeSimulatorTest, AcceptsPostOnlyLimitOrderWhenNotCrossing) {
-  // Send individual L2 updates to build the book
-  send_bid_update(1, 100.00, 1.0);   // Best bid
-  send_bid_update(1, 99.50, 2.0);    // Second bid level
-  send_ask_update(1, 101.00, 1.0);   // Best ask
-  send_ask_update(1, 101.50, 3.0);   // Second ask level
+  send_bid_update(1, 100.00, 1.0);
+  send_bid_update(1, 99.50, 2.0);
+  send_ask_update(1, 101.00, 1.0);
+  send_ask_update(1, 101.50, 3.0);
 
   PendingEvent e{};
   e.order_id_ = 1;
   e.instrument_id_ = 1;
   e.side_ = Side::Buy;
-  e.price_ = CodecUtils::encode_price(100.00); // equal to best bid, not crossing
+  e.price_ = CodecUtils::encode_price(100.00);
   e.quantity_ = CodecUtils::encode_quantity(10.0);
   e.order_type_ = OrderType::Limit;
   e.exec_inst_ = ExecInst::ParticipateDontInitiate;
@@ -201,7 +195,6 @@ TEST_F(ExchangeSimulatorTest, RejectsBehindTouchSimulationWithoutL2Provenance) {
 }
 
 TEST_F(ExchangeSimulatorTest, RejectsBehindTouchReplaceWithoutL2Provenance) {
-  // At-touch placement on an L1-only book is allowed...
   L1UpdateEvent l1{};
   l1.instrument_id_ = 1;
   l1.exchange_ = Exchange::Okx;
@@ -223,9 +216,6 @@ TEST_F(ExchangeSimulatorTest, RejectsBehindTouchReplaceWithoutL2Provenance) {
   sim->on_pending(e);
   ASSERT_TRUE(handler->has<AcceptedEvent>());
 
-  // ...but re-pricing it behind the touch would re-initialize queue_ahead from
-  // fabricated zero depth — the replace path must enforce the same invariant
-  // as placement.
   PendingReplaceEvent r{};
   r.order_id_ = 3;
   r.request_id_ = 300;
@@ -253,7 +243,6 @@ TEST_F(ExchangeSimulatorTest, RejectsOffTickGridLimitPrice) {
 }
 
 TEST_F(ExchangeSimulatorTest, RejectsPostOnlyCrossingLimitOrder) {
-  // Send individual L2 updates
   send_bid_update(1, 100.00, 1.0);
   send_ask_update(1, 101.00, 1.0);
 
@@ -261,7 +250,7 @@ TEST_F(ExchangeSimulatorTest, RejectsPostOnlyCrossingLimitOrder) {
   e.order_id_ = 1;
   e.instrument_id_ = 1;
   e.side_ = Side::Buy;
-  e.price_ = CodecUtils::encode_price(102.00); // crosses ask
+  e.price_ = CodecUtils::encode_price(102.00);
   e.quantity_ = CodecUtils::encode_quantity(10.0);
   e.order_type_ = OrderType::Limit;
   e.exec_inst_ = ExecInst::ParticipateDontInitiate;
@@ -273,12 +262,10 @@ TEST_F(ExchangeSimulatorTest, RejectsPostOnlyCrossingLimitOrder) {
   ASSERT_EQ(rej->reject_reason_, RejectReason::PostOnly);
 }
 
-// --- 2. Market order sweeps top of book ----------------------
 
 TEST_F(ExchangeSimulatorTest, MarketBuySweepsTopOfBook) {
-  // Build ask side of book with multiple levels
-  send_ask_update(1, 101.00, 5.0);   // Best ask - should be hit first
-  send_ask_update(1, 102.00, 10.0);  // Second level
+  send_ask_update(1, 101.00, 5.0);
+  send_ask_update(1, 102.00, 10.0);
 
   PendingEvent e{};
   e.order_id_ = 1;
@@ -292,15 +279,12 @@ TEST_F(ExchangeSimulatorTest, MarketBuySweepsTopOfBook) {
   ASSERT_TRUE(handler->has<AcceptedEvent>());
   ASSERT_TRUE(handler->has<ExecutedEvent>());
 
-  // Check that we have 2 executions
-  EXPECT_EQ(handler->events.size(), 3); // 1 Accepted + 2 Executed
+  EXPECT_EQ(handler->events.size(), 3);
 
-  // Get the first execution (should be at best price)
-  ExecutedEvent first_exec = handler->events[1]->as<ExecutedEvent>(); // events[0] is Accepted
+  ExecutedEvent first_exec = handler->events[1]->as<ExecutedEvent>();
   EXPECT_EQ(first_exec.last_price_, CodecUtils::encode_price(101.00));
   EXPECT_EQ(first_exec.last_quantity_, CodecUtils::encode_quantity(5.0));
 
-  // Check the second execution too
   ExecutedEvent second_exec = handler->events[2]->as<ExecutedEvent>();
   EXPECT_EQ(second_exec.last_price_, CodecUtils::encode_price(102.00));
   EXPECT_EQ(second_exec.last_quantity_, CodecUtils::encode_quantity(5.0));
@@ -332,9 +316,8 @@ TEST_F(ExchangeSimulatorTest, MarketSweepCarriesExactMetadataTakerFee) {
 }
 
 TEST_F(ExchangeSimulatorTest, MarketSellSweepsTopOfBook) {
-  // Build bid side of book
-  send_bid_update(1, 100.00, 5.0);   // Best bid - should be hit first
-  send_bid_update(1, 99.00, 10.0);   // Second level
+  send_bid_update(1, 100.00, 5.0);
+  send_bid_update(1, 99.00, 10.0);
 
   PendingEvent e{};
   e.order_id_ = 2;
@@ -348,17 +331,14 @@ TEST_F(ExchangeSimulatorTest, MarketSellSweepsTopOfBook) {
   ASSERT_TRUE(handler->has<AcceptedEvent>());
   ASSERT_TRUE(handler->has<ExecutedEvent>());
 
-  // Check that we have 2 executions
-  EXPECT_EQ(handler->events.size(), 3); // 1 Accepted + 2 Executed
+  EXPECT_EQ(handler->events.size(), 3);
 
-  // Get the first execution (should be at best bid price)
-  ExecutedEvent first_exec = handler->events[1]->as<ExecutedEvent>(); // events[0] is Accepted
-  EXPECT_EQ(first_exec.last_price_, CodecUtils::encode_price(100.00)); // Best bid
+  ExecutedEvent first_exec = handler->events[1]->as<ExecutedEvent>();
+  EXPECT_EQ(first_exec.last_price_, CodecUtils::encode_price(100.00));
   EXPECT_EQ(first_exec.last_quantity_, CodecUtils::encode_quantity(5.0));
 
-  // Check the second execution
   ExecutedEvent second_exec = handler->events[2]->as<ExecutedEvent>();
-  EXPECT_EQ(second_exec.last_price_, CodecUtils::encode_price(99.00)); // Second bid
+  EXPECT_EQ(second_exec.last_price_, CodecUtils::encode_price(99.00));
   EXPECT_EQ(second_exec.last_quantity_, CodecUtils::encode_quantity(5.0));
 }
 
@@ -389,7 +369,6 @@ TEST_F(ExchangeSimulatorTest, IocLimitNeverSweepsBeyondItsContraTouchPrice) {
             CancelReason::System);
 }
 
-// --- 3. Resting orders and trade-based fills -----------------
 
 TEST_F(ExchangeSimulatorTest, RestingBuyFilledWhenTradeCrossesBelow) {
   PendingEvent e{};
@@ -405,15 +384,13 @@ TEST_F(ExchangeSimulatorTest, RestingBuyFilledWhenTradeCrossesBelow) {
   ASSERT_TRUE(handler->has<AcceptedEvent>());
   handler->clear();
 
-  // External sell of 5.0 at 99.00 (through our bid). No displayed depth at our
-  // price -> we are first in line, so the full print is our fill budget.
   send_trade(1, Side::Sell, 99.00, 5.0);
 
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   const auto ex = handler->last<ExecutedEvent>();
   EXPECT_EQ(ex->order_id_, e.order_id_);
   EXPECT_EQ(ex->last_quantity_, CodecUtils::encode_quantity(5.0));
-  EXPECT_EQ(ex->last_price_, CodecUtils::encode_price(100.00));  // filled at OUR limit
+  EXPECT_EQ(ex->last_price_, CodecUtils::encode_price(100.00));
 }
 
 TEST_F(ExchangeSimulatorTest, RestingSellFilledWhenTradeCrossesAbove) {
@@ -429,17 +406,15 @@ TEST_F(ExchangeSimulatorTest, RestingSellFilledWhenTradeCrossesAbove) {
   sim->on_pending(e);
   handler->clear();
 
-  // External buy of 5.0 at 102.00 (through our ask); no depth ahead of us.
   send_trade(1, Side::Buy, 102.00, 5.0);
 
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   const auto ex = handler->last<ExecutedEvent>();
   EXPECT_EQ(ex->order_id_, e.order_id_);
   EXPECT_EQ(ex->last_quantity_, CodecUtils::encode_quantity(5.0));
-  EXPECT_EQ(ex->last_price_, CodecUtils::encode_price(101.00));  // filled at OUR limit
+  EXPECT_EQ(ex->last_price_, CodecUtils::encode_price(101.00));
 }
 
-// --- 4. Cancels and Replaces --------------------------------
 
 TEST_F(ExchangeSimulatorTest, CancelsRestingOrder) {
   PendingEvent e{};
@@ -460,7 +435,6 @@ TEST_F(ExchangeSimulatorTest, CancelsRestingOrder) {
 }
 
 TEST_F(ExchangeSimulatorTest, RejectsReplaceIfCrossingPostOnly) {
-  // Build book state with individual L2 updates
   send_bid_update(1, 100.00, 1.0);
   send_ask_update(1, 101.00, 1.0);
 
@@ -476,7 +450,7 @@ TEST_F(ExchangeSimulatorTest, RejectsReplaceIfCrossingPostOnly) {
 
   PendingReplaceEvent r{};
   r.order_id_ = 40;
-  r.price_ = CodecUtils::encode_price(102.00); // crosses ask
+  r.price_ = CodecUtils::encode_price(102.00);
   r.quantity_ = CodecUtils::encode_quantity(1.0);
   sim->on_pending_replace(r);
 
@@ -507,24 +481,20 @@ TEST_F(ExchangeSimulatorTest, RejectsOffTickGridReplacementPrice) {
   EXPECT_THROW(sim->on_pending_replace(replacement), std::runtime_error);
 }
 
-// --- 5. Test multiple L2 updates building the book -----------
 
 TEST_F(ExchangeSimulatorTest, HandlesMultipleL2UpdatesCorrectly) {
-  // Build book gradually with multiple individual updates
-  send_bid_update(1, 100.00, 5.0);   // Best bid
-  send_bid_update(1, 99.50, 10.0);   // Second bid level
-  send_ask_update(1, 101.00, 8.0);   // Best ask
-  send_ask_update(1, 101.50, 12.0);  // Second ask level
+  send_bid_update(1, 100.00, 5.0);
+  send_bid_update(1, 99.50, 10.0);
+  send_ask_update(1, 101.00, 8.0);
+  send_ask_update(1, 101.50, 12.0);
 
-  // Update an existing level (should replace)
-  send_bid_update(1, 100.05, 3.0);   // New best bid
+  send_bid_update(1, 100.05, 3.0);
 
-  // Test that an order at the old best bid level gets accepted (not crossing)
   PendingEvent e{};
   e.order_id_ = 50;
   e.instrument_id_ = 1;
   e.side_ = Side::Buy;
-  e.price_ = CodecUtils::encode_price(100.00); // Below new best bid, should be fine
+  e.price_ = CodecUtils::encode_price(100.00);
   e.quantity_ = CodecUtils::encode_quantity(2.0);
   e.order_type_ = OrderType::Limit;
   e.exec_inst_ = ExecInst::ParticipateDontInitiate;
@@ -535,12 +505,8 @@ TEST_F(ExchangeSimulatorTest, HandlesMultipleL2UpdatesCorrectly) {
   ASSERT_FALSE(handler->has<RejectedEvent>());
 }
 
-// --- 5b. Queue position: displayed depth must drain before we fill ----------
-// These pin the fix for the dead queue-position model (displayed_depth_at used to
-// read the never-populated legacy book, so every order started at queue front).
 
 TEST_F(ExchangeSimulatorTest, QueuePositionDelaysFillUntilDepthAheadDrains) {
-  // 5.0 displayed at 100.00 -> our order joins BEHIND it (queue_init_fraction=1.0 default).
   send_bid_update(1, 100.00, 5.0);
   send_bid_update(1, 99.00, 5.0);
   send_ask_update(1, 101.00, 5.0);
@@ -559,11 +525,9 @@ TEST_F(ExchangeSimulatorTest, QueuePositionDelaysFillUntilDepthAheadDrains) {
             CodecUtils::encode_price(201.00));
   handler->clear();
 
-  // A 3.0 print only drains 3.0 of the 5.0 queued ahead of us -> NO fill.
   send_trade(1, Side::Sell, 100.00, 3.0);
   ASSERT_FALSE(handler->has<ExecutedEvent>());
 
-  // A further 4.0 print drains the remaining 2.0 ahead, then fills our full 2.0.
   send_trade(1, Side::Sell, 100.00, 4.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   const auto ex = handler->last<ExecutedEvent>();
@@ -574,7 +538,7 @@ TEST_F(ExchangeSimulatorTest, QueuePositionDelaysFillUntilDepthAheadDrains) {
 }
 
 TEST_F(ExchangeSimulatorTest, QueueInitFractionZeroJoinsFrontOfQueue) {
-  sim->set_queue_init_fraction(0.0);   // optimistic calibration knob: start at queue front
+  sim->set_queue_init_fraction(0.0);
   send_bid_update(1, 100.00, 5.0);
   send_ask_update(1, 101.00, 5.0);
 
@@ -589,15 +553,12 @@ TEST_F(ExchangeSimulatorTest, QueueInitFractionZeroJoinsFrontOfQueue) {
   sim->on_pending(e);
   handler->clear();
 
-  // Same 5.0 displayed depth, but with fraction=0 even a 1.0 print fills us immediately.
   send_trade(1, Side::Sell, 100.00, 1.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_, CodecUtils::encode_quantity(1.0));
 }
 
 TEST_F(ExchangeSimulatorTest, SizedPrintFillsPartiallyAcrossTrades) {
-  // No displayed depth at our price (we improve the book) -> first in line,
-  // and each print's finite quantity caps how much of us it can fill.
   PendingEvent e{};
   e.order_id_ = 120;
   e.instrument_id_ = 1;
@@ -609,23 +570,21 @@ TEST_F(ExchangeSimulatorTest, SizedPrintFillsPartiallyAcrossTrades) {
   sim->on_pending(e);
   handler->clear();
 
-  send_trade(1, Side::Sell, 100.00, 2.0);   // partial: 2.0 of 5.0
+  send_trade(1, Side::Sell, 100.00, 2.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_, CodecUtils::encode_quantity(2.0));
   handler->clear();
 
-  send_trade(1, Side::Sell, 100.00, 3.0);   // remainder: 3.0 -> order fully done
+  send_trade(1, Side::Sell, 100.00, 3.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_, CodecUtils::encode_quantity(3.0));
   handler->clear();
 
-  // Order is gone: further prints can't fill it.
   send_trade(1, Side::Sell, 100.00, 1.0);
   ASSERT_FALSE(handler->has<ExecutedEvent>());
 }
 
 TEST_F(ExchangeSimulatorTest, TradeThroughPrintUsesFiniteVolumePastQueue) {
-  // 5.0 displayed at 100.00 -> our 2.0 bid rests BEHIND it.
   send_bid_update(1, 100.00, 5.0);
   send_bid_update(1, 99.00, 5.0);
   send_ask_update(1, 101.00, 5.0);
@@ -641,13 +600,9 @@ TEST_F(ExchangeSimulatorTest, TradeThroughPrintUsesFiniteVolumePastQueue) {
   sim->on_pending(e);
   handler->clear();
 
-  // A 1.0 print AT our price only drains 1.0 of the 5.0 queued ahead -> no fill.
   send_trade(1, Side::Sell, 100.00, 1.0);
   ASSERT_FALSE(handler->has<ExecutedEvent>());
 
-  // A 1.0 print at 99.00 is strictly through our counterfactual 100.00 bid.
-  // It proves the historical queue ahead has gone, but supplies only 1.0 of
-  // observed demand, so our 2.0 order fills partially.
   send_trade(1, Side::Sell, 99.00, 1.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   const auto ex = handler->last<ExecutedEvent>();
@@ -655,23 +610,18 @@ TEST_F(ExchangeSimulatorTest, TradeThroughPrintUsesFiniteVolumePastQueue) {
   EXPECT_EQ(ex->last_quantity_, CodecUtils::encode_quantity(1.0));
   EXPECT_EQ(ex->last_price_, CodecUtils::encode_price(100.00));
 
-  // A later through print fills only the one-unit remainder.
   handler->clear();
   send_trade(1, Side::Sell, 99.00, 5.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_,
             CodecUtils::encode_quantity(1.0));
 
-  // Fully filled and removed: nothing left for later prints.
   handler->clear();
   send_trade(1, Side::Sell, 99.00, 5.0);
   ASSERT_FALSE(handler->has<ExecutedEvent>());
 }
 
 TEST_F(ExchangeSimulatorTest, TradeThroughSharesBudgetWithAtPriceLevel) {
-  // Two of our bids: 2.0 at 100.00 (behind 5.0 displayed) and 2.0 at 99.00
-  // (behind 3.0 displayed). A 3.0 print at 99.00 spends 2.0 on the better
-  // counterfactual order and can drain only 1.0 from the at-price queue.
   send_bid_update(1, 100.00, 5.0);
   send_bid_update(1, 99.00, 3.0);
   send_ask_update(1, 101.00, 5.0);
@@ -698,19 +648,15 @@ TEST_F(ExchangeSimulatorTest, TradeThroughSharesBudgetWithAtPriceLevel) {
   handler->clear();
 
   send_trade(1, Side::Sell, 99.00, 3.0);
-  // Traded-through top order filled in full, consuming two units.
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->order_id_, top.order_id_);
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_,
             CodecUtils::encode_quantity(2.0));
   handler->clear();
 
-  // Only one unit reached the lower queue, leaving two ahead. A two-unit
-  // at-price print reaches the boundary but cannot fill us.
   send_trade(1, Side::Sell, 99.00, 2.0);
   ASSERT_FALSE(handler->has<ExecutedEvent>());
 
-  // The following print now fills the lower order from the front.
   send_trade(1, Side::Sell, 99.00, 2.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->order_id_, lower.order_id_);
@@ -730,21 +676,17 @@ TEST_F(ExchangeSimulatorTest, ZeroSizedTradePrintFillsNothing) {
   sim->on_pending(e);
   handler->clear();
 
-  send_trade(1, Side::Sell, 99.00, 0.0);   // size 0 = no fill budget
+  send_trade(1, Side::Sell, 99.00, 0.0);
   ASSERT_FALSE(handler->has<ExecutedEvent>());
 }
 
-// --- 6. Test removing levels with zero quantity --------------
 
 TEST_F(ExchangeSimulatorTest, RemovesLevelWhenQuantityIsZero) {
-  // Build initial book
   send_bid_update(1, 100.00, 5.0);
   send_ask_update(1, 101.00, 8.0);
 
-  // Remove the bid level by sending zero quantity
   send_bid_update(1, 100.00, 0.0);
 
-  // Now a post-only buy at 100.00 should be accepted since there's no crossing level
   PendingEvent e{};
   e.order_id_ = 60;
   e.instrument_id_ = 1;
@@ -760,10 +702,8 @@ TEST_F(ExchangeSimulatorTest, RemovesLevelWhenQuantityIsZero) {
   ASSERT_FALSE(handler->has<RejectedEvent>());
 }
 
-// --- 7. Test snapshot vs incremental updates ----------------
 
 TEST_F(ExchangeSimulatorTest, HandlesSnapshotUpdates) {
-  // Send a snapshot update (full book refresh)
   L2UpdateEvent snapshot;
   snapshot.instrument_id_ = 1;
   snapshot.exchange_ = Exchange::Okx;
@@ -771,7 +711,7 @@ TEST_F(ExchangeSimulatorTest, HandlesSnapshotUpdates) {
   snapshot.price_1_ = CodecUtils::encode_price(100.00);
   snapshot.size_1_ = CodecUtils::encode_quantity(10.0);
   snapshot.timestamp_ns_ = clock->epoch_nanos();
-  snapshot.snapshot_ = BooleanEnum::TRUE;  // This is a snapshot
+  snapshot.snapshot_ = BooleanEnum::TRUE;
   snapshot.num_levels_ = 1;
   snapshot.is_batch_message_ = BooleanEnum::TRUE;
   snapshot.is_last_batch_ = BooleanEnum::FALSE;
@@ -784,12 +724,11 @@ TEST_F(ExchangeSimulatorTest, HandlesSnapshotUpdates) {
   snapshot.is_last_batch_ = BooleanEnum::TRUE;
   sim->process_l2_update(snapshot);
 
-  // Test that the book was properly initialized
   PendingEvent e{};
   e.order_id_ = 70;
   e.instrument_id_ = 1;
   e.side_ = Side::Buy;
-  e.price_ = CodecUtils::encode_price(99.50); // Below best bid
+  e.price_ = CodecUtils::encode_price(99.50);
   e.quantity_ = CodecUtils::encode_quantity(1.0);
   e.order_type_ = OrderType::Limit;
   e.exec_inst_ = ExecInst::ParticipateDontInitiate;
@@ -800,10 +739,8 @@ TEST_F(ExchangeSimulatorTest, HandlesSnapshotUpdates) {
   ASSERT_FALSE(handler->has<RejectedEvent>());
 }
 
-// --- 8. Test batch messages ----------------------------------
 
 TEST_F(ExchangeSimulatorTest, HandlesBatchMessages) {
-  // Send first message in a batch
   L2UpdateEvent batch1;
   batch1.instrument_id_ = 1;
   batch1.exchange_ = Exchange::Okx;
@@ -818,7 +755,6 @@ TEST_F(ExchangeSimulatorTest, HandlesBatchMessages) {
 
   sim->process_l2_update(batch1);
 
-  // Send last message in batch
   L2UpdateEvent batch2;
   batch2.instrument_id_ = 1;
   batch2.exchange_ = Exchange::Okx;
@@ -833,12 +769,11 @@ TEST_F(ExchangeSimulatorTest, HandlesBatchMessages) {
 
   sim->process_l2_update(batch2);
 
-  // Verify book is built correctly
   PendingEvent e{};
   e.order_id_ = 80;
   e.instrument_id_ = 1;
   e.side_ = Side::Buy;
-  e.price_ = CodecUtils::encode_price(100.50); // Between bid and ask
+  e.price_ = CodecUtils::encode_price(100.50);
   e.quantity_ = CodecUtils::encode_quantity(1.0);
   e.order_type_ = OrderType::Limit;
   e.exec_inst_ = ExecInst::ParticipateDontInitiate;
@@ -934,8 +869,6 @@ TEST_F(ExchangeSimulatorTest, CrossingReplaceRejectKeepsOriginalOrderResting) {
   EXPECT_EQ(handler->last<ReplaceRejectedEvent>()->reject_reason_,
             RejectReason::PostOnly);
 
-  // The original bid remains behind one unit of displayed depth. A two-unit
-  // sell print drains that queue and then fills the unchanged original order.
   handler->clear();
   send_trade(1, Side::Sell, 100.0, 2.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
@@ -1238,8 +1171,6 @@ TEST_F(ExchangeSimulatorTest,
   sim->on_pending(order);
   handler->clear();
 
-  // Three units drain the displayed queue and one fills the order. The
-  // cumulative filled quantity is now exactly one, with four still resting.
   send_trade(1, Side::Sell, 100.0, 4.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_,
@@ -1258,8 +1189,6 @@ TEST_F(ExchangeSimulatorTest,
               RejectReason::InvalidQuantity);
   }
 
-  // Both invalid replacements preserve the residual and its queue priority at
-  // the original price: the remaining four fill immediately at that price.
   handler->clear();
   send_trade(1, Side::Sell, 100.0, 4.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
@@ -1454,12 +1383,6 @@ TEST_F(ExchangeSimulatorTest,
   EXPECT_EQ(rows[5][26], "7004");
 }
 
-// --- Bounded cancellation attribution ------------------------------------
-//
-// Public-tape measurement (tools/analysis/queue_dynamics.py, 2026-09-01)
-// shows 85-89% of displayed-depth removal at the touch is CANCELLATION, so
-// a model that advances our queue position only on trades captures a small
-// minority of real queue advancement. These pin the credit's invariants.
 
 TEST_F(ExchangeSimulatorTest, RejectsInvalidCancelCreditAlpha) {
   EXPECT_THROW(sim->set_cancel_credit_alpha(-0.1), std::invalid_argument);
@@ -1476,11 +1399,6 @@ TEST_F(ExchangeSimulatorTest, RejectsInvalidCancelCreditAlpha) {
 }
 
 TEST_F(ExchangeSimulatorTest, CancelCreditAdvancesQueueOnlyWhenArmed) {
-  // 10 units rest ahead of us. 5 of them CANCEL (depth falls with no trade).
-  // With credit armed at alpha 1.0 the whole reduction is ours to claim
-  // (we sit behind the entire displayed queue, so share = 1.0), leaving 5
-  // ahead; a 6-unit print then drains those 5 and fills us. The pessimistic
-  // default must NOT fill on the identical sequence.
   for (const double alpha : {0.0, 1.0}) {
     auto local_handler = std::make_unique<MockExchangeResponseHandler>();
     auto local_clock = std::make_shared<SimulationClock>();
@@ -1524,9 +1442,7 @@ TEST_F(ExchangeSimulatorTest, CancelCreditAdvancesQueueOnlyWhenArmed) {
     local.on_pending(e);
     ASSERT_TRUE(local_handler->has<AcceptedEvent>());
 
-    // NO priming observation: the level's baseline is seeded at placement,
-    // so the very first reduction after we join must already be credited.
-    l2(Side::Buy, 100.00, 5.0);   // pure cancellation: 5 units vanish, no trade
+    l2(Side::Buy, 100.00, 5.0);
     trade(Side::Sell, 100.00, 6.0);
 
     if (alpha > 0.0) {
@@ -1540,10 +1456,6 @@ TEST_F(ExchangeSimulatorTest, CancelCreditAdvancesQueueOnlyWhenArmed) {
 }
 
 TEST_F(ExchangeSimulatorTest, CancelCreditAlphaChangesQueueLocationNotVolume) {
-  // We join one quarter of the way into 100 displayed units. Sixteen units
-  // then cancel. Uniform attribution (alpha=1) credits 4; front-biased
-  // attribution (alpha=0.5) credits 8. Only the latter lets an 18-unit print
-  // reach our one-unit order. Alpha zero remains the pessimistic baseline.
   for (const double alpha : {0.0, 1.0, 0.5}) {
     auto local_handler = std::make_unique<MockExchangeResponseHandler>();
     auto local_clock = std::make_shared<SimulationClock>();
@@ -1607,7 +1519,7 @@ TEST_F(ExchangeSimulatorTest, CancelCreditNeverExceedsObservedCancellation) {
   order.exec_inst_ = ExecInst::ParticipateDontInitiate;
   sim->on_pending(order);
 
-  send_bid_update(1, 100.00, 95.0);  // exactly five cancellations
+  send_bid_update(1, 100.00, 95.0);
   send_trade(1, Side::Sell, 100.00, 95.0);
   EXPECT_FALSE(handler->has<ExecutedEvent>())
       << "bounded attribution cannot credit more than five units";
@@ -1617,9 +1529,6 @@ TEST_F(ExchangeSimulatorTest, CancelCreditNeverExceedsObservedCancellation) {
 }
 
 TEST_F(ExchangeSimulatorTest, CancelCreditNeverDoubleCountsTradedVolume) {
-  // Displayed depth already reflects executions, so a depth reduction that is
-  // fully explained by a print must yield ZERO cancellation credit -- the
-  // trade already drained our queue once.
   sim->set_cancel_credit_alpha(1.0);
   send_bid_update(1, 100.00, 10.0);
   send_ask_update(1, 101.00, 10.0);
@@ -1635,11 +1544,9 @@ TEST_F(ExchangeSimulatorTest, CancelCreditNeverDoubleCountsTradedVolume) {
   sim->on_pending(e);
   ASSERT_TRUE(handler->has<AcceptedEvent>());
 
-  send_trade(1, Side::Sell, 100.00, 4.0);  // drains 4 of the 10 ahead of us
-  send_bid_update(1, 100.00, 6.0);       // reduction is exactly the print
+  send_trade(1, Side::Sell, 100.00, 4.0);
+  send_bid_update(1, 100.00, 6.0);
 
-  // Queue ahead must still be 6. If the reduction had been double-counted as
-  // a cancellation it would be 2, and this 5-unit print would fill us.
   send_trade(1, Side::Sell, 100.00, 5.0);
   EXPECT_FALSE(handler->has<ExecutedEvent>());
 }
@@ -1662,8 +1569,8 @@ TEST_F(ExchangeSimulatorTest,
   order.exec_inst_ = ExecInst::ParticipateDontInitiate;
   sim->on_pending(order);
 
-  send_bid_update(1, 100.00, 5.0);       // five credited cancellations
-  send_trade(1, Side::Sell, 100.00, 6.0);  // five ahead, then our fill
+  send_bid_update(1, 100.00, 5.0);
+  send_trade(1, Side::Sell, 100.00, 6.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
 
   sim->flush_quote_lifecycle();
@@ -1679,7 +1586,6 @@ TEST_F(ExchangeSimulatorTest,
 }
 
 TEST_F(ExchangeSimulatorTest, CancelCreditIgnoresDepthIncreases) {
-  // Liquidity JOINING behind us must never advance our queue position.
   sim->set_cancel_credit_alpha(1.0);
   send_bid_update(1, 100.00, 10.0);
   send_ask_update(1, 101.00, 10.0);
@@ -1695,18 +1601,12 @@ TEST_F(ExchangeSimulatorTest, CancelCreditIgnoresDepthIncreases) {
   sim->on_pending(e);
   ASSERT_TRUE(handler->has<AcceptedEvent>());
 
-  send_bid_update(1, 100.00, 15.0);  // 5 units join behind us
-  send_trade(1, Side::Sell, 100.00, 10.0);  // drains exactly the 10 ahead
+  send_bid_update(1, 100.00, 15.0);
+  send_trade(1, Side::Sell, 100.00, 10.0);
   EXPECT_FALSE(handler->has<ExecutedEvent>());
 }
 
 TEST_F(ExchangeSimulatorTest, SnapshotResyncGrantsNoCancelCreditOrFills) {
-  // A resync clears BOTH sides and rebuilds them over many messages (bids
-  // may complete long before asks). Mid-rebuild, a level
-  // we rest on reads as empty and looks fully cancelled. Resting orders must
-  // come through a two-sided multi-message snapshot with NO fills and NO
-  // queue advancement, and must re-seed their baseline from the completed
-  // book rather than diffing across the gap.
   sim->set_cancel_credit_alpha(0.5);
   send_bid_update(1, 100.00, 10.0);
   send_ask_update(1, 101.00, 10.0);
@@ -1726,8 +1626,6 @@ TEST_F(ExchangeSimulatorTest, SnapshotResyncGrantsNoCancelCreditOrFills) {
   place(2, Side::Sell, 101.00);
   ASSERT_TRUE(handler->has<AcceptedEvent>());
 
-  // Multi-message, two-sided snapshot. Bids finish first (mirroring the live
-  // ordering), so the ask side sits fully cleared for several messages.
   auto snapshot_msg = [&](Side side, double px, double qty, bool last) {
     L2UpdateEvent l2{};
     l2.instrument_id_ = 1;
@@ -1744,8 +1642,6 @@ TEST_F(ExchangeSimulatorTest, SnapshotResyncGrantsNoCancelCreditOrFills) {
   };
   snapshot_msg(Side::Buy, 100.00, 10.0, false);
   snapshot_msg(Side::Buy, 99.99, 5.0, false);
-  // Some feeds put a last marker on the bid side even though the whole-book
-  // snapshot is not complete until the separately batched asks finish.
   snapshot_msg(Side::Buy, 99.98, 5.0, true);
   snapshot_msg(Side::Sell, 101.00, 10.0, false);
   snapshot_msg(Side::Sell, 101.01, 5.0, true);
@@ -1753,21 +1649,16 @@ TEST_F(ExchangeSimulatorTest, SnapshotResyncGrantsNoCancelCreditOrFills) {
   EXPECT_FALSE(handler->has<ExecutedEvent>())
       << "snapshot rebuild must never fill a resting order";
 
-  // Ten units drain exactly the original queue and still cannot fill us. Any
-  // phantom credit from the rebuild makes this exact-boundary print fill.
   send_trade(1, Side::Sell, 100.00, 10.0);
   EXPECT_FALSE(handler->has<ExecutedEvent>())
       << "phantom cancel credit was granted during the snapshot rebuild";
 
-  // Use the untouched ask order to prove the final snapshot seeded its
-  // baseline: five units cancel, then a six-unit buy print reaches us.
   send_ask_update(1, 101.00, 5.0);
   send_trade(1, Side::Buy, 101.00, 6.0);
   EXPECT_TRUE(handler->has<ExecutedEvent>())
       << "baselines must re-seed and resume crediting after a resync";
 }
 
-// --- Real-time (L1) queue accounting with trade netting -------------------
 
 namespace {
 PendingEvent post_only_bid(int64_t order_id, double price, double qty) {
@@ -1794,7 +1685,7 @@ L1UpdateEvent l1_touch(double bid_px, double bid_sz, double ask_px,
   l1.timestamp_ns_ = ts;
   return l1;
 }
-}  // namespace
+}
 
 TEST_F(ExchangeSimulatorTest, L1AccountingCapsQueueAtDisplayedTouch) {
   TempLifecyclePath telemetry;
@@ -1804,10 +1695,8 @@ TEST_F(ExchangeSimulatorTest, L1AccountingCapsQueueAtDisplayedTouch) {
   clock->set_time(1'000'000'000);
   send_bid_update(1, 100.00, 10.0);
   send_ask_update(1, 101.00, 10.0);
-  sim->on_pending(post_only_bid(1, 100.00, 1.0));  // 10 ahead of us
+  sim->on_pending(post_only_bid(1, 100.00, 1.0));
 
-  // The real-time touch shows the level thinning to 2: at most 2 can be
-  // ahead of us. A 2.5 print then drains 2 and fills 0.5.
   clock->set_time(1'050'000'000);
   sim->process_l1_update(l1_touch(100.00, 2.0, 101.00, 10.0, 1'050'000'000));
   clock->set_time(1'100'000'000);
@@ -1840,8 +1729,6 @@ TEST_F(ExchangeSimulatorTest, L1AccountingIsOffByDefault) {
 
 TEST_F(ExchangeSimulatorTest,
        L1AccountingNetsPrintAlreadyReflectedInObservation) {
-  // bookTicker 100 -> 6 arrives, then the 4-unit print that CAUSED it
-  // arrives 0.5 ms later. Correct queue ahead is 6, not 2.
   sim->set_queue_model(ExchangeSimulator::QueueModel::Optimistic);
   sim->set_queue_accounting_on_l1(true);
   sim->set_trade_netting_window_ns(3'000'000);
@@ -1853,19 +1740,17 @@ TEST_F(ExchangeSimulatorTest,
   clock->set_time(1'050'000'000);
   sim->process_l1_update(l1_touch(100.00, 6.0, 101.00, 10.0, 1'050'000'000));
   clock->set_time(1'050'500'000);
-  send_trade(1, Side::Sell, 100.00, 4.0);   // already reflected: no drain
+  send_trade(1, Side::Sell, 100.00, 4.0);
   clock->set_time(1'200'000'000);
-  send_trade(1, Side::Sell, 100.00, 5.0);   // 6 ahead: no fill yet
+  send_trade(1, Side::Sell, 100.00, 5.0);
   EXPECT_FALSE(handler->has<ExecutedEvent>());
-  send_trade(1, Side::Sell, 100.00, 1.5);   // 1 more ahead, then 0.5 fill
+  send_trade(1, Side::Sell, 100.00, 1.5);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_,
             CodecUtils::encode_quantity(0.5));
 }
 
 TEST_F(ExchangeSimulatorTest, L1AccountingTradeFirstThenObservationIsConsistent) {
-  // ROBO-style ordering: the print arrives before the bookTicker that
-  // reflects it. Queue ahead must also end at 6.
   sim->set_queue_model(ExchangeSimulator::QueueModel::Optimistic);
   sim->set_queue_accounting_on_l1(true);
   sim->set_trade_netting_window_ns(3'000'000);
@@ -1886,9 +1771,6 @@ TEST_F(ExchangeSimulatorTest, L1AccountingTradeFirstThenObservationIsConsistent)
 }
 
 TEST_F(ExchangeSimulatorTest, NettedPrintStillFillsAnOrderNearTheFront) {
-  // Netting must apply the print to the PRE-observation position: an order
-  // with 2 ahead is filled by a 4-unit print even when a bookTicker showing
-  // the level at 5 arrived just before it.
   sim->set_queue_model(ExchangeSimulator::QueueModel::Optimistic);
   sim->set_queue_accounting_on_l1(true);
   sim->set_trade_netting_window_ns(3'000'000);
@@ -1896,7 +1778,7 @@ TEST_F(ExchangeSimulatorTest, NettedPrintStillFillsAnOrderNearTheFront) {
   clock->set_time(1'000'000'000);
   send_bid_update(1, 100.00, 10.0);
   send_ask_update(1, 101.00, 10.0);
-  sim->on_pending(post_only_bid(1, 100.00, 1.0));  // 2 ahead
+  sim->on_pending(post_only_bid(1, 100.00, 1.0));
 
   clock->set_time(1'050'000'000);
   sim->process_l1_update(l1_touch(100.00, 5.0, 101.00, 10.0, 1'050'000'000));
@@ -1917,15 +1799,13 @@ TEST_F(ExchangeSimulatorTest, NettingWindowExpires) {
   sim->on_pending(post_only_bid(1, 100.00, 1.0));
   clock->set_time(1'050'000'000);
   sim->process_l1_update(l1_touch(100.00, 6.0, 101.00, 10.0, 1'050'000'000));
-  clock->set_time(1'060'000'000);                 // 10 ms later: fresh print
-  send_trade(1, Side::Sell, 100.00, 4.0);         // 6 -> 2 ahead
-  send_trade(1, Side::Sell, 100.00, 2.5);         // 2 ahead, then 0.5 fill
+  clock->set_time(1'060'000'000);
+  send_trade(1, Side::Sell, 100.00, 4.0);
+  send_trade(1, Side::Sell, 100.00, 2.5);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
 }
 
 TEST_F(ExchangeSimulatorTest, TapeWithOwnOrdersExcludesOurOwnSizeFromTheBound) {
-  // On a capture taken while our own order was live the displayed level contains that
-  // order. A level showing exactly our size is then empty of others.
   sim->set_queue_model(ExchangeSimulator::QueueModel::Optimistic);
   sim->set_queue_accounting_on_l1(true);
   sim->set_tape_includes_own_orders(true);
@@ -1942,9 +1822,6 @@ TEST_F(ExchangeSimulatorTest, TapeWithOwnOrdersExcludesOurOwnSizeFromTheBound) {
 
 TEST_F(ExchangeSimulatorTest,
        NettingEpisodeKeepsThePreObservationSnapshotAcrossObservations) {
-  // Example: queue 10; the L1 feed reports 8 then 6 inside the window;
-  // the delayed prints explaining those reductions total 4. Correct queue
-  // ahead is 6. Overwriting the snapshot at the second observation gives 4.
   sim->set_queue_model(ExchangeSimulator::QueueModel::Optimistic);
   sim->set_queue_accounting_on_l1(true);
   sim->set_trade_netting_window_ns(3'000'000);
@@ -1957,12 +1834,12 @@ TEST_F(ExchangeSimulatorTest,
   clock->set_time(1'050'400'000);
   sim->process_l1_update(l1_touch(100.00, 6.0, 101.00, 10.0, 1'050'400'000));
   clock->set_time(1'050'900'000);
-  send_trade(1, Side::Sell, 100.00, 2.0);   // delayed prints, already reflected
+  send_trade(1, Side::Sell, 100.00, 2.0);
   send_trade(1, Side::Sell, 100.00, 2.0);
   clock->set_time(1'200'000'000);
-  send_trade(1, Side::Sell, 100.00, 5.0);   // 6 ahead: no fill
+  send_trade(1, Side::Sell, 100.00, 5.0);
   EXPECT_FALSE(handler->has<ExecutedEvent>());
-  send_trade(1, Side::Sell, 100.00, 1.5);   // 1 more ahead, then 0.5 fill
+  send_trade(1, Side::Sell, 100.00, 1.5);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_quantity_,
             CodecUtils::encode_quantity(0.5));
@@ -1970,9 +1847,6 @@ TEST_F(ExchangeSimulatorTest,
 
 TEST_F(ExchangeSimulatorTest,
        DelayedPrintDoesNotShrinkTheBookBelowTheObservedDepth) {
-  // bookTicker already shows 10 -> 6; the 4-unit print arrives afterwards.
-  // The simulator's book must stay at 6 (not 2), so a later accounting pass
-  // triggered by an unrelated depth update cannot cap the queue to 2.
   sim->set_queue_model(ExchangeSimulator::QueueModel::Optimistic);
   sim->set_queue_accounting_on_l1(true);
   sim->set_trade_netting_window_ns(3'000'000);
@@ -1984,23 +1858,18 @@ TEST_F(ExchangeSimulatorTest,
   clock->set_time(1'050'000'000);
   sim->process_l1_update(l1_touch(100.00, 6.0, 101.00, 10.0, 1'050'000'000));
   clock->set_time(1'050'500'000);
-  send_trade(1, Side::Sell, 100.00, 4.0);   // already reflected in the 6
+  send_trade(1, Side::Sell, 100.00, 4.0);
   clock->set_time(1'100'000'000);
-  send_bid_update(1, 99.00, 12.0);          // unrelated level: runs accounting
-  // A fresh order placed now must see displayed depth 6 at 100.00, not 2.
+  send_bid_update(1, 99.00, 12.0);
   sim->on_pending(post_only_bid(2, 100.00, 1.0));
   clock->set_time(1'200'000'000);
-  send_trade(1, Side::Sell, 100.00, 5.0);   // 6 ahead of order 1: no fill
+  send_trade(1, Side::Sell, 100.00, 5.0);
   EXPECT_FALSE(handler->has<ExecutedEvent>());
-  send_trade(1, Side::Sell, 100.00, 1.5);   // fills order 1 (0.5), not order 2
+  send_trade(1, Side::Sell, 100.00, 1.5);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(handler->last<ExecutedEvent>()->order_id_, 1);
 }
 
-
-// --- Limit-price-bounded taker fills (non-post-only limits) ------------------
-// A limit order must NEVER fill through its own limit price, and a GTC
-// remainder rests instead of being cancelled.
 
 namespace {
 
@@ -2013,11 +1882,9 @@ PendingEvent make_limit(int64_t order_id, Side side, double price, double qty) {
   e.quantity_ = CodecUtils::encode_quantity(qty);
   e.order_type_ = OrderType::Limit;
   e.time_in_force_ = TimeInForce::Gtc;
-  // exec_inst_ stays Undefined -> NOT post-only
   return e;
 }
 
-// Sum of executed quantity for one order id across the response stream.
 int64_t executed_qty(const MockExchangeResponseHandler& h, int64_t order_id) {
   int64_t total = 0;
   for (const auto& ev : h.events) {
@@ -2028,23 +1895,20 @@ int64_t executed_qty(const MockExchangeResponseHandler& h, int64_t order_id) {
   return total;
 }
 
-}  // namespace
+}
 
 TEST_F(ExchangeSimulatorTest, PassiveLimitBuyBelowMarketRestsInsteadOfFilling) {
   send_bid_update(1, 100.00, 5.0);
   send_ask_update(1, 101.00, 5.0);
   send_bid_update(1, 99.00, 1.0);
 
-  // Non-post-only GTC buy BELOW the market: nothing is marketable, so it must
-  // rest rather than sweep the asks.
   sim->on_pending(make_limit(200, Side::Buy, 99.00, 2.0));
 
   ASSERT_TRUE(handler->has<AcceptedEvent>());
   ASSERT_FALSE(handler->has<ExecutedEvent>());
-  ASSERT_FALSE(handler->has<CancelAcceptedEvent>());  // rested, not IOC-cancelled
+  ASSERT_FALSE(handler->has<CancelAcceptedEvent>());
   handler->clear();
 
-  // It really rests: a sell print through our price fills it at OUR limit.
   send_trade(1, Side::Sell, 98.00, 10.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   const auto ex = handler->last<ExecutedEvent>();
@@ -2058,8 +1922,6 @@ TEST_F(ExchangeSimulatorTest, MarketableLimitStopsAtLimitAndRestsRemainder) {
   send_ask_update(1, 101.00, 5.0);
   send_ask_update(1, 102.00, 10.0);
 
-  // Buy 10 limit 101: only the 5.0 displayed at 101 is at-or-better; the
-  // 102 level must NOT be touched, and the 5.0 remainder rests at 101.
   sim->on_pending(make_limit(210, Side::Buy, 101.00, 10.0));
 
   ASSERT_TRUE(handler->has<AcceptedEvent>());
@@ -2069,10 +1931,9 @@ TEST_F(ExchangeSimulatorTest, MarketableLimitStopsAtLimitAndRestsRemainder) {
       EXPECT_LE(ev->as<ExecutedEvent>().last_price_, CodecUtils::encode_price(101.00));
     }
   }
-  ASSERT_FALSE(handler->has<CancelAcceptedEvent>());  // GTC remainder rests
+  ASSERT_FALSE(handler->has<CancelAcceptedEvent>());
   handler->clear();
 
-  // The resting remainder fills when a sell print reaches our price.
   send_trade(1, Side::Sell, 101.00, 5.0);
   ASSERT_TRUE(handler->has<ExecutedEvent>());
   EXPECT_EQ(executed_qty(*handler, 210), CodecUtils::encode_quantity(5.0));
@@ -2090,8 +1951,6 @@ TEST_F(ExchangeSimulatorTest, BackToBackTakersCannotReuseDisplayedLiquidity) {
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_price_, CodecUtils::encode_price(101.00));
   handler->clear();
 
-  // Second taker before any new market data: the 101 depth was consumed, so
-  // this must fill at 102 — not reuse the same 101 liquidity.
   PendingEvent m2 = make_limit(221, Side::Buy, 0.0, 5.0);
   m2.order_type_ = OrderType::Market;
   sim->on_pending(m2);
@@ -2099,7 +1958,6 @@ TEST_F(ExchangeSimulatorTest, BackToBackTakersCannotReuseDisplayedLiquidity) {
   EXPECT_EQ(handler->last<ExecutedEvent>()->last_price_, CodecUtils::encode_price(102.00));
 }
 
-// --- Replace leaves accounting (amend semantics) ------------------------------
 
 TEST_F(ExchangeSimulatorTest, ReplaceAccountsForCumulativeFills) {
   send_bid_update(1, 100.00, 1.0);
@@ -2107,7 +1965,6 @@ TEST_F(ExchangeSimulatorTest, ReplaceAccountsForCumulativeFills) {
   send_bid_update(1, 99.00, 1.0);
   send_bid_update(1, 98.00, 1.0);
 
-  // Post-only buy 10 @ 100 with queue_init_fraction 0 -> front of queue.
   sim->set_queue_init_fraction(0.0);
   PendingEvent e{};
   e.order_id_ = 300;
@@ -2119,11 +1976,10 @@ TEST_F(ExchangeSimulatorTest, ReplaceAccountsForCumulativeFills) {
   e.exec_inst_ = ExecInst::ParticipateDontInitiate;
   sim->on_pending(e);
 
-  send_trade(1, Side::Sell, 99.00, 4.0);   // 4.0 of 10.0 filled
+  send_trade(1, Side::Sell, 99.00, 4.0);
   EXPECT_EQ(executed_qty(*handler, 300), CodecUtils::encode_quantity(4.0));
   handler->clear();
 
-  // Amend to total qty 10 at a new price: leaves must be 10 - 4 = 6, not 10.
   PendingReplaceEvent r{};
   r.order_id_ = 300;
   r.instrument_id_ = 1;
@@ -2133,17 +1989,15 @@ TEST_F(ExchangeSimulatorTest, ReplaceAccountsForCumulativeFills) {
   ASSERT_TRUE(handler->has<ReplaceAcceptedEvent>());
   handler->clear();
 
-  send_trade(1, Side::Sell, 98.00, 100.0);  // budget far above leaves
-  EXPECT_EQ(executed_qty(*handler, 300), CodecUtils::encode_quantity(6.0));  // NOT 10.0
+  send_trade(1, Side::Sell, 98.00, 100.0);
+  EXPECT_EQ(executed_qty(*handler, 300), CodecUtils::encode_quantity(6.0));
 }
 
-// --- Same-level orders share one trade budget ---------------------------------
 
 TEST_F(ExchangeSimulatorTest, SameLevelOrdersShareConsumedQueueDepth) {
   send_bid_update(1, 100.00, 5.0);
   send_ask_update(1, 101.00, 5.0);
 
-  // Two of our orders join behind the same 5.0 of displayed depth.
   PendingEvent a{};
   a.order_id_ = 400;
   a.instrument_id_ = 1;
@@ -2159,16 +2013,11 @@ TEST_F(ExchangeSimulatorTest, SameLevelOrdersShareConsumedQueueDepth) {
   sim->on_pending(b);
   handler->clear();
 
-  // One 9.0 print: 5.0 drains the shared market depth, 2.0 fills A, 2.0 fills
-  // B. Without propagation, B is charged the 5.0 market depth AGAIN and misses.
   send_trade(1, Side::Sell, 100.00, 9.0);
   EXPECT_EQ(executed_qty(*handler, 400), CodecUtils::encode_quantity(2.0));
   EXPECT_EQ(executed_qty(*handler, 401), CodecUtils::encode_quantity(2.0));
 }
 
-// --- Pessimistic vs Optimistic queue models -----------------------------------
-// Run identical event sequences through both models: Optimistic must never fill
-// later or less, and displayed-depth reductions must produce a genuine gap.
 
 namespace {
 
@@ -2220,7 +2069,6 @@ struct ModelPair {
     t.timestamp_ns_ = clock->epoch_nanos();
     pess.process_trade_event(t);
     opt.process_trade_event(t);
-    // Invariant: Optimistic never fills less than Pessimistic.
     EXPECT_GE(executed_qty(opt_handler, 500), executed_qty(pess_handler, 500));
   }
 
@@ -2238,18 +2086,16 @@ struct ModelPair {
   }
 };
 
-}  // namespace
+}
 
 TEST(ExchangeSimulatorQueueModelTest, OptimisticFillsWherePessimisticDoesNotOnL2Cancels) {
   ModelPair p;
   p.l2(Side::Buy, 100.00, 10.0);
   p.l2(Side::Sell, 101.00, 5.0);
-  p.place_buy(100.00, 2.0);      // joins behind 10.0 displayed
+  p.place_buy(100.00, 2.0);
 
-  p.l2(Side::Buy, 100.00, 1.0);  // depth collapses to 1.0 -> cancels somewhere in the queue
+  p.l2(Side::Buy, 100.00, 1.0);
 
-  // 3.0 print: Optimistic (queue capped at 1.0) drains 1.0 then fills 2.0;
-  // Pessimistic still has 10.0 ahead and gets nothing.
   p.trade(Side::Sell, 100.00, 3.0);
   EXPECT_EQ(executed_qty(p.opt_handler, 500), CodecUtils::encode_quantity(2.0));
   EXPECT_EQ(executed_qty(p.pess_handler, 500), 0);
@@ -2261,11 +2107,8 @@ TEST(ExchangeSimulatorQueueModelTest, OptimisticCapAlsoAppliesOnL1UpdatesWhenEna
   p.opt.set_queue_accounting_on_l1(true);
   p.l2(Side::Buy, 100.00, 10.0);
   p.l2(Side::Sell, 101.00, 5.0);
-  p.place_buy(100.00, 2.0);      // joins behind 10.0 displayed
+  p.place_buy(100.00, 2.0);
 
-  // Top-of-book L1 shows the bid depth collapsed to 1.0. With L1 accounting
-  // enabled the Optimistic cap acts on it; on L1-driven tapes this is what
-  // keeps Optimistic from degrading to Pessimistic.
   p.l1(100.00, 1.0, 101.00, 5.0);
 
   p.trade(Side::Sell, 100.00, 3.0);

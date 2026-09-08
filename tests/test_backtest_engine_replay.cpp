@@ -1,8 +1,3 @@
-// tests/test_backtest_engine_replay.cpp
-//
-// BackTestEngine replay semantics: scoring window (pre-window priming), venue
-// provenance filtering, reference-venue delivery, timestamp-merged inputs,
-// the opt-in timer source, and EventRing growth.
 
 #include "backtest/backtest_engine.hpp"
 #include "asset_info_manager.hpp"
@@ -85,8 +80,6 @@ class RecordingStrategy final : public reflex::Strategy {
   std::vector<std::string>* delivery_order_{nullptr};
 };
 
-// Sends one post-only order on the first L1 and records when the venue
-// response is stamped and when it is delivered.
 class OrderTimingStrategy final : public reflex::Strategy {
  public:
   OrderTimingStrategy(reflex::ClockInterface* clock,
@@ -151,7 +144,7 @@ std::string write_replay_file(const std::string& name,
   std::FILE* f = std::fopen(path.c_str(), "wb");
   EXPECT_NE(f, nullptr);
   if (!f) return {};
-  reflex::FileHeader header{};  // default ctor sets magic + version
+  reflex::FileHeader header{};
   header.message_slot_size_ = sizeof(reflex::MessageSlot);
   EXPECT_EQ(std::fwrite(&header, sizeof(header), 1, f), 1u);
   for (const auto& slot : slots) {
@@ -269,9 +262,6 @@ TEST(BackTestEngineReplayTest,
   engine.set_data_files({file_name});
 
   EXPECT_NO_THROW(engine.run_backtest());
-  // The pre-window L2 snapshot primed the book, so the post-only order placed
-  // on the first in-window L1 is accepted (not rejected against an empty book)
-  // and stamped at window start.
   EXPECT_EQ(strategy->accepted_event_ns, kWindowStartNs);
   EXPECT_EQ(strategy->rejected_event_ns, 0);
   EXPECT_EQ(engine.get_results().simulation_start_time_ns_, kWindowStartNs);
@@ -467,7 +457,7 @@ TEST(EventRingTest, GrowthPreservesFifoOrderAcrossWrappedHead) {
   EXPECT_EQ(ring.front(), 1);
   ring.pop();
   ring.emplace_back() = 3;
-  ring.emplace_back() = 4;  // grows after the head has wrapped
+  ring.emplace_back() = 4;
 
   ASSERT_EQ(ring.size(), 3u);
   EXPECT_EQ(ring.front(), 2);
@@ -479,4 +469,4 @@ TEST(EventRingTest, GrowthPreservesFifoOrderAcrossWrappedHead) {
   EXPECT_TRUE(ring.empty());
 }
 
-}  // namespace
+}

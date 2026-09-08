@@ -1,7 +1,3 @@
-// tests/test_backtest_engine_provenance.cpp
-//
-// Venue/instrument provenance filtering on the file-data path and the
-// per-action latency configuration.
 
 #include "backtest/backtest_engine.hpp"
 
@@ -94,4 +90,4 @@ TEST(BackTestEngineProvenanceTest, NegativeOverridesUseLegLatency) {
   EXPECT_EQ(engine.configured_response_latency_ns(), 6);
 }
 
-}  // namespace
+}

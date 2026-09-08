@@ -25,14 +25,11 @@ struct Order {
   OrderState order_state_ = OrderState::Undefined;
   OrderWaitState order_wait_state_ = OrderWaitState::Undefined;
 
-  // Copy constructor / assignment
   Order(const Order& other) = default;
   Order& operator=(const Order& other) = default;
 
-  // Default constructor
   Order() = default;
 
-  // Reset method
   void reset() {
     timestamp_ns_ = 0;
     order_id_ = parent_id_ = request_id_ = exchange_order_id_ = 0;
@@ -69,4 +66,4 @@ struct Order {
   }
 };
 
-} // namespace reflex
+}

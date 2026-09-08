@@ -31,7 +31,6 @@ TEST(TimerManagerTest, RepeatingTimerFiresMultipleTimes) {
     manager.check_scheduled_timers(time);
   }
 
-  // Should trigger at: 1000, 1500, 2000, 2500, 3000 => 5 times
   EXPECT_EQ(call_count, 5);
 }
 

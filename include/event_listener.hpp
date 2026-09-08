@@ -40,66 +40,65 @@ class OrderManagementListener {
 public:
   virtual ~OrderManagementListener() = default;
 
-  virtual void on_pending(const Order& /*order*/, const PendingEvent& /*event*/) {}
-  virtual void on_accepted(const Order& /*order*/, const AcceptedEvent& /*event*/) {}
-  virtual void on_rejected(const Order& /*order*/, const RejectedEvent& /*event*/) {}
+  virtual void on_pending(const Order& , const PendingEvent& ) {}
+  virtual void on_accepted(const Order& , const AcceptedEvent& ) {}
+  virtual void on_rejected(const Order& , const RejectedEvent& ) {}
 
-  virtual void on_pending_replace(const Order& /*original*/,
-                                  const Order& /*replacement*/,
-                                  const PendingReplaceEvent& /*event*/) {}
+  virtual void on_pending_replace(const Order& ,
+                                  const Order& ,
+                                  const PendingReplaceEvent& ) {}
 
-  virtual void on_replace_accepted(const Order& /*replacement*/,
-                                   const ReplaceAcceptedEvent& /*event*/) {}
+  virtual void on_replace_accepted(const Order& ,
+                                   const ReplaceAcceptedEvent& ) {}
 
-  virtual void on_replace_rejected(const Order& /*original*/,
-                                   const ReplaceRejectedEvent& /*event*/) {}
+  virtual void on_replace_rejected(const Order& ,
+                                   const ReplaceRejectedEvent& ) {}
 
-  virtual void on_pending_cancel(const Order& /*order*/,
-                                 const PendingCancelEvent& /*event*/) {}
+  virtual void on_pending_cancel(const Order& ,
+                                 const PendingCancelEvent& ) {}
 
-  virtual void on_cancel_accepted(const Order& /*order*/,
-                                  const CancelAcceptedEvent& /*event*/) {}
+  virtual void on_cancel_accepted(const Order& ,
+                                  const CancelAcceptedEvent& ) {}
 
-  virtual void on_cancel_rejected(const Order& /*order*/,
-                                  const CancelRejectedEvent& /*event*/) {}
+  virtual void on_cancel_rejected(const Order& ,
+                                  const CancelRejectedEvent& ) {}
 
-  virtual void on_executed(const Order& /*order*/, const ExecutedEvent& /*event*/) {}
+  virtual void on_executed(const Order& , const ExecutedEvent& ) {}
 };
 
 class AlgoOrderManagementListener {
 public:
   virtual ~AlgoOrderManagementListener() = default;
 
-  virtual void on_accepted(const Order& /*order*/, const AcceptedEvent& /*event*/) {}
-  virtual void on_rejected(const Order& /*order*/, const RejectedEvent& /*event*/) {}
+  virtual void on_accepted(const Order& , const AcceptedEvent& ) {}
+  virtual void on_rejected(const Order& , const RejectedEvent& ) {}
 
-  virtual void on_replace_accepted(const Order& /*replacement*/,
-                                   const ReplaceAcceptedEvent& /*event*/) {}
+  virtual void on_replace_accepted(const Order& ,
+                                   const ReplaceAcceptedEvent& ) {}
 
-  virtual void on_replace_rejected(const Order& /*original*/,
-                                   const ReplaceRejectedEvent& /*event*/) {}
+  virtual void on_replace_rejected(const Order& ,
+                                   const ReplaceRejectedEvent& ) {}
 
-  virtual void on_cancel_accepted(const Order& /*order*/,
-                                  const CancelAcceptedEvent& /*event*/) {}
+  virtual void on_cancel_accepted(const Order& ,
+                                  const CancelAcceptedEvent& ) {}
 
-  virtual void on_cancel_rejected(const Order& /*order*/,
-                                  const CancelRejectedEvent& /*event*/) {}
+  virtual void on_cancel_rejected(const Order& ,
+                                  const CancelRejectedEvent& ) {}
 
-  virtual void on_executed(const Order& /*order*/, const ExecutedEvent& /*event*/) {}
+  virtual void on_executed(const Order& , const ExecutedEvent& ) {}
 };
 
 class GatewayOrderEventListener {
 public:
   virtual ~GatewayOrderEventListener() = default;
 
-  virtual void on_pending(const PendingEvent& /*event*/) {}
+  virtual void on_pending(const PendingEvent& ) {}
 
-  virtual void on_pending_replace(const PendingReplaceEvent& /*event*/) {}
+  virtual void on_pending_replace(const PendingReplaceEvent& ) {}
 
-  virtual void on_pending_cancel(const PendingCancelEvent& /*event*/) {}
+  virtual void on_pending_cancel(const PendingCancelEvent& ) {}
 };
 
-// Market data event listeners
 class MarketDataListener {
 public:
   virtual ~MarketDataListener() = default;

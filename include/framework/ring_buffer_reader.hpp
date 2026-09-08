@@ -13,16 +13,6 @@ namespace reflex {
 
 constexpr disruptorplus::sequence_t INITIAL = static_cast<disruptorplus::sequence_t>(-1);
 
-/**
- * Generic ring buffer reader base that handles the common pattern of:
- * 1. Check for published messages (non-blocking acquire-load)
- * 2. Process each message with a dispatcher
- * 3. Signal progress to barriers
- *
- * Not intended for direct instantiation/deletion through a base pointer:
- * the destructor is protected and non-virtual — derive and expose your own
- * processing entry point (see MessageSlotReader).
- */
 template<typename MessageSlot>
 class RingBufferReader {
 public:
@@ -47,19 +37,11 @@ public:
 protected:
     ~RingBufferReader() = default;
 
-    /**
-     * Shared hot-loop: acquire-load the last published sequence, then invoke
-     * `dispatch` for every published slot and signal progress to the barrier.
-     * `dispatch` is taken by forwarding reference so the call inlines — no
-     * std::function indirection on the per-message path beyond what the
-     * dispatcher itself introduces. Sequence comparisons go through
-     * disruptorplus::difference() so wrap-around is handled correctly.
-     */
     template<typename Dispatch>
     int drain(Dispatch&& dispatch) {
         const disruptorplus::sequence_t available = claim_strategy_->last_published();
         if (disruptorplus::difference(available, next_) < 0) {
-            return 0;  // nothing published yet (also covers the INITIAL state)
+            return 0;
         }
 
         int work = 0;
@@ -83,17 +65,10 @@ private:
     disruptorplus::sequence_t next_;
 };
 
-/**
- * Specialized ring buffer reader for MessageSlot with built-in message type
- * dispatching. Handlers are stored in a flat array indexed directly by the
- * MessageType tag, so per-message dispatch is an O(1) array index — no hash
- * lookup — followed by a single std::function call.
- */
 class MessageSlotReader final : public RingBufferReader<MessageSlot> {
 public:
     using MessageTypeHandler = std::function<void(const MessageSlot&)>;
 
-    // MessageType is a dense enum (1..24); 32 leaves headroom for new types.
     static constexpr std::size_t kMaxMessageTypes = 32;
     static_assert(static_cast<std::size_t>(MessageType::LiquidationEvent) < kMaxMessageTypes,
                   "kMaxMessageTypes must cover every MessageType value");
@@ -116,7 +91,6 @@ public:
         default_handler_ = std::move(handler);
     }
 
-    // Dispatches via the flat handler array.
     int process_messages() {
         return drain([this](const MessageSlot& slot) { dispatch_message(slot); });
     }
@@ -135,4 +109,4 @@ private:
     MessageTypeHandler default_handler_;
 };
 
-} // namespace reflex
+}

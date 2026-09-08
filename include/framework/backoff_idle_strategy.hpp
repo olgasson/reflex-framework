@@ -7,21 +7,6 @@
 
 namespace reflex {
 
-/**
- * Agrona-style backoff idle strategy: on consecutive zero-work passes,
- * escalate spin -> yield -> park, with the park duration doubling from
- * min_park_ns up to max_park_ns. Any productive pass resets to spinning.
- *
- * Purpose: collector deployments. The busy-spin NoopIdleStrategy burns a full
- * core per agent thread for latency that pure data capture does not need —
- * with the default 1ms max park, a quiet loop costs ~0.1% of a core while
- * adding at most ~1ms of wakeup latency to a feed that is itself batched at
- * 10-100ms. Keep NoopIdleStrategy for trading deployments.
- *
- * NOTE: this only helps if agents report work HONESTLY — an agent returning
- * nonzero work on every pass (e.g. counting "serviced the socket" as work)
- * pins the strategy in the spin state forever.
- */
 class BackoffIdleStrategy final : public IdleStrategy {
 public:
     explicit BackoffIdleStrategy(int64_t max_spins = 100, int64_t max_yields = 10,
@@ -81,4 +66,4 @@ private:
     int64_t park_ns_;
 };
 
-}  // namespace reflex
+}

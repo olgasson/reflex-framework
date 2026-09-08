@@ -70,7 +70,7 @@ void seed_snapshot(OrderBookManager& mgr) {
   mgr.process_l2_update(make_l2(1'000, Side::Sell, 100'200, 6, snapshot, batch, true));
 }
 
-} // namespace
+}
 
 TEST(OrderBookManagerTest, ProvidesIncrementalBookAfterSnapshot) {
   OrderBookManager mgr;

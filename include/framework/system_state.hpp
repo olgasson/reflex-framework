@@ -50,7 +50,6 @@ inline std::string to_string(SystemState state) {
   return "UNKNOWN";
 }
 
-// std::ostream support
 inline std::ostream& operator<<(std::ostream& os, SystemState state) {
   return os << to_string(state);
 }
