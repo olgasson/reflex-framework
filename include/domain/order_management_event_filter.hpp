@@ -5,9 +5,6 @@
 
 namespace reflex {
 
-// ------------------------------
-// Interface
-// ------------------------------
 class OrderManagementEventFilter {
 public:
   virtual ~OrderManagementEventFilter() = default;
@@ -24,9 +21,6 @@ public:
   virtual bool matches(const CancelRejectedEvent&) const { return false; }
 };
 
-// ------------------------------
-// PassAllEventFilter
-// ------------------------------
 class PassAllEventFilter : public OrderManagementEventFilter {
 public:
   bool matches(const PendingEvent&) const override { return true; }
@@ -42,4 +36,4 @@ public:
 };
 
 
-} // namespace reflex
+}

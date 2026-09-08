@@ -63,7 +63,7 @@ TradeEvent make_trade(int32_t instrument_id,
   e.instrument_id_ = instrument_id;
   e.timestamp_ns_ = timestamp;
   e.side_ = aggressor_side;
-  e.price_ = price;  // TradeEvent still uses price_/size_, not changed
+  e.price_ = price;
   e.size_ = qty;
   return e;
 }
@@ -88,7 +88,7 @@ void seed_basic_snapshot(IncrementalOrderBook& book) {
   book.apply_l2_update(make_l2(kInstrument, 1'000, Side::Sell, 100'200, 6, snapshot, batch, true));
 }
 
-} // namespace
+}
 
 TEST(IncrementalOrderBookTest, SeedsFromSnapshot) {
   IncrementalOrderBook book(4);
@@ -146,9 +146,6 @@ TEST(IncrementalOrderBookTest,
 
   const bool snapshot = true;
   const bool batch = true;
-  // Some venues close the bid range and ask range independently. The bid-side
-  // last marker must not publish a half-book, and the first ask must not clear
-  // the bids that were just rebuilt.
   book.apply_l2_update(make_l2(kInstrument, 1'000, Side::Buy, 100'000, 5,
                                snapshot, batch, false));
   book.apply_l2_update(make_l2(kInstrument, 1'000, Side::Buy, 99'900, 3,
@@ -199,8 +196,8 @@ TEST(IncrementalOrderBookTest, NotifiesListenerForSingleDelta) {
   book.add_listener(&listener);
 
   book.apply_l2_update(make_l2(kInstrument, 2'000, Side::Buy, 100'000, 9,
-                               /*snapshot=*/false, /*batch=*/false,
-                               /*last=*/false));
+                               false, false,
+                               false));
 
   ASSERT_EQ(listener.updates.size(), 1U);
   EXPECT_EQ(listener.updates.front().bids.front().quantity, 9);
@@ -209,9 +206,7 @@ TEST(IncrementalOrderBookTest, NotifiesListenerForSingleDelta) {
 TEST(IncrementalOrderBookTest, UpdatesTopOfBookFromL1) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: bid=100'000@5, 99'900@3  |  ask=100'100@4, 100'200@6
 
-  // L1 update: bid improves up to 100'050, ask degrades up to 100'150
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'050, 7, 100'150, 8));
 
   EXPECT_TRUE(book.ready());
@@ -220,19 +215,17 @@ TEST(IncrementalOrderBookTest, UpdatesTopOfBookFromL1) {
   EXPECT_EQ(book.best_ask_price(), 100'150);
   EXPECT_EQ(book.best_ask_quantity(), 8);
 
-  // Bid improved: old best (100'000@5) should be preserved as level 2
   const auto& bids = book.bids();
   ASSERT_GE(bids.size(), 3u);
-  EXPECT_EQ(bids[0].price, 100'050);  // New best
-  EXPECT_EQ(bids[1].price, 100'000);  // Old best (preserved!)
+  EXPECT_EQ(bids[0].price, 100'050);
+  EXPECT_EQ(bids[1].price, 100'000);
   EXPECT_EQ(bids[1].quantity, 5);
-  EXPECT_EQ(bids[2].price, 99'900);   // Original level 2
+  EXPECT_EQ(bids[2].price, 99'900);
 
-  // Ask degraded: old best (100'100) should be erased, 100'200 becomes level 2
   const auto& asks = book.asks();
   ASSERT_EQ(asks.size(), 2u);
-  EXPECT_EQ(asks[0].price, 100'150);  // New best
-  EXPECT_EQ(asks[1].price, 100'200);  // Old level 2
+  EXPECT_EQ(asks[0].price, 100'150);
+  EXPECT_EQ(asks[1].price, 100'200);
 }
 
 TEST(IncrementalOrderBookTest, AppliesTradesToRestingLiquidity) {
@@ -337,103 +330,86 @@ TEST(IncrementalOrderBookTest, L2ProvenanceRequiresCompletedTwoSidedBook) {
   EXPECT_TRUE(book.has_l2_provenance());
 }
 
-// ===== New Tests for L1 Improvement/Degradation Scenarios =====
 
 TEST(IncrementalOrderBookTest, L1BidImprovesKeepsOldLevel) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: bid=100'000@5, 99'900@3
 
-  // Bid improves: 100'000 → 100'050
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'050, 7, 100'100, 4));
 
   const auto& bids = book.bids();
   ASSERT_EQ(bids.size(), 3u);
-  EXPECT_EQ(bids[0].price, 100'050);  // New best
+  EXPECT_EQ(bids[0].price, 100'050);
   EXPECT_EQ(bids[0].quantity, 7);
-  EXPECT_EQ(bids[1].price, 100'000);  // Old best preserved!
+  EXPECT_EQ(bids[1].price, 100'000);
   EXPECT_EQ(bids[1].quantity, 5);
-  EXPECT_EQ(bids[2].price, 99'900);   // Level 2 preserved
+  EXPECT_EQ(bids[2].price, 99'900);
 }
 
 TEST(IncrementalOrderBookTest, L1BidDegradesErasesOldLevel) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: bid=100'000@5, 99'900@3
 
-  // Bid degrades: 100'000 → 99'900 (top level was consumed)
   book.apply_l1_update(make_l1(kInstrument, 2'000, 99'900, 3, 100'100, 4));
 
   const auto& bids = book.bids();
   ASSERT_EQ(bids.size(), 1u);
-  EXPECT_EQ(bids[0].price, 99'900);   // New best
+  EXPECT_EQ(bids[0].price, 99'900);
   EXPECT_EQ(bids[0].quantity, 3);
-  // 100'000 was erased (consumed)
 }
 
 TEST(IncrementalOrderBookTest, L1AskImprovesKeepsOldLevel) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: ask=100'100@4, 100'200@6
 
-  // Ask improves: 100'100 → 100'050 (tighter)
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'000, 5, 100'050, 8));
 
   const auto& asks = book.asks();
   ASSERT_EQ(asks.size(), 3u);
-  EXPECT_EQ(asks[0].price, 100'050);  // New best
+  EXPECT_EQ(asks[0].price, 100'050);
   EXPECT_EQ(asks[0].quantity, 8);
-  EXPECT_EQ(asks[1].price, 100'100);  // Old best preserved!
+  EXPECT_EQ(asks[1].price, 100'100);
   EXPECT_EQ(asks[1].quantity, 4);
-  EXPECT_EQ(asks[2].price, 100'200);  // Level 2 preserved
+  EXPECT_EQ(asks[2].price, 100'200);
 }
 
 TEST(IncrementalOrderBookTest, L1AskDegradesErasesOldLevel) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: ask=100'100@4, 100'200@6
 
-  // Ask degrades: 100'100 → 100'200 (top level was consumed)
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'000, 5, 100'200, 6));
 
   const auto& asks = book.asks();
   ASSERT_EQ(asks.size(), 1u);
-  EXPECT_EQ(asks[0].price, 100'200);  // New best
+  EXPECT_EQ(asks[0].price, 100'200);
   EXPECT_EQ(asks[0].quantity, 6);
-  // 100'100 was erased (consumed)
 }
 
 TEST(IncrementalOrderBookTest, L1BothSidesImprove) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: bid=100'000@5, 99'900@3  |  ask=100'100@4, 100'200@6
 
-  // Both improve: bid up to 100'050, ask down to 100'075
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'050, 7, 100'075, 8));
 
-  // Both old bests should be preserved
   const auto& bids = book.bids();
   ASSERT_EQ(bids.size(), 3u);
   EXPECT_EQ(bids[0].price, 100'050);
-  EXPECT_EQ(bids[1].price, 100'000);  // Preserved
+  EXPECT_EQ(bids[1].price, 100'000);
   EXPECT_EQ(bids[2].price, 99'900);
 
   const auto& asks = book.asks();
   ASSERT_EQ(asks.size(), 3u);
   EXPECT_EQ(asks[0].price, 100'075);
-  EXPECT_EQ(asks[1].price, 100'100);  // Preserved
+  EXPECT_EQ(asks[1].price, 100'100);
   EXPECT_EQ(asks[2].price, 100'200);
 }
 
 TEST(IncrementalOrderBookTest, L1BothSidesDegrade) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: bid=100'000@5, 99'900@3  |  ask=100'100@4, 100'200@6
 
-  // Both degrade: bid down to 99'900, ask up to 100'200
   book.apply_l1_update(make_l1(kInstrument, 2'000, 99'900, 3, 100'200, 6));
 
-  // Both old bests should be erased
   const auto& bids = book.bids();
   ASSERT_EQ(bids.size(), 1u);
   EXPECT_EQ(bids[0].price, 99'900);
@@ -467,14 +443,11 @@ TEST(IncrementalOrderBookTest, MultiTickL1DegradeErasesEveryTraversedLevel) {
 TEST(IncrementalOrderBookTest, MultipleL1ImprovementsBuildDepth) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
-  // Initial: bid=100'000@5
 
-  // Series of improvements building up depth
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'010, 2, 100'100, 4));
   book.apply_l1_update(make_l1(kInstrument, 2'100, 100'020, 3, 100'100, 4));
   book.apply_l1_update(make_l1(kInstrument, 2'200, 100'030, 1, 100'100, 4));
 
-  // Should have accumulated depth
   const auto& bids = book.bids();
   ASSERT_GE(bids.size(), 5u);
   EXPECT_EQ(bids[0].price, 100'030);
@@ -488,13 +461,10 @@ TEST(IncrementalOrderBookTest, L1ImprovementThenL2SnapshotResyncs) {
   IncrementalOrderBook book(8);
   seed_basic_snapshot(book);
 
-  // L1 improvement adds new level
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'050, 7, 100'100, 4));
 
-  // Book should have intermediate state
   ASSERT_EQ(book.bids().size(), 3u);
 
-  // L2 snapshot resyncs everything
   const bool snapshot = true;
   const bool batch = true;
   book.apply_l2_update(make_l2(kInstrument, 3'000, Side::Buy, 100'060, 10, snapshot, batch, false));
@@ -502,7 +472,6 @@ TEST(IncrementalOrderBookTest, L1ImprovementThenL2SnapshotResyncs) {
   book.apply_l2_update(make_l2(kInstrument, 3'000, Side::Sell, 100'110, 5, snapshot, batch, false));
   book.apply_l2_update(make_l2(kInstrument, 3'000, Side::Sell, 100'120, 7, snapshot, batch, true));
 
-  // After snapshot, book should have exact L2 state
   const auto& bids = book.bids();
   ASSERT_EQ(bids.size(), 2u);
   EXPECT_EQ(bids[0].price, 100'060);
@@ -523,8 +492,6 @@ TEST(IncrementalOrderBookTest, L1BidImprovementPrunesCrossedAskLevels) {
   book.apply_l2_update(make_l2(kInstrument, 1'000, Side::Sell, 100'125, 5, snapshot, batch, false));
   book.apply_l2_update(make_l2(kInstrument, 1'000, Side::Sell, 100'200, 6, snapshot, batch, true));
 
-  // Bid improves through the previous best ask. Any ask at or below the new
-  // bid is stale after this top-of-book update and must not remain visible.
   book.apply_l1_update(make_l1(kInstrument, 2'000, 100'150, 7, 100'200, 6));
 
   EXPECT_TRUE(book.ready());
@@ -546,8 +513,6 @@ TEST(IncrementalOrderBookTest, L1AskImprovementPrunesCrossedBidLevels) {
   book.apply_l2_update(make_l2(kInstrument, 1'000, Side::Buy, 99'900, 3, snapshot, batch, false));
   book.apply_l2_update(make_l2(kInstrument, 1'000, Side::Sell, 100'100, 4, snapshot, batch, true));
 
-  // Ask improves through the previous best bid. Any bid at or above the new
-  // ask is stale after this top-of-book update and must not remain visible.
   book.apply_l1_update(make_l1(kInstrument, 2'000, 99'900, 3, 99'950, 8));
 
   EXPECT_TRUE(book.ready());

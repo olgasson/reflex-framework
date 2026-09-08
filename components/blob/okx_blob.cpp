@@ -16,8 +16,6 @@
 #include <libwebsockets.h>
 
 
-
-// route enum
 enum class Route : int8_t { LOGIN, SUB, BOOK_L2, BBO, MARK_PRICE, FUNDING_RATE, OPEN_INTEREST, TRADES, UNKNOWN };
 
 
@@ -25,7 +23,6 @@ static Route route_from_root(yyjson_val* root) {
   if (auto* ev = yyjson_obj_get(root, "event"); ev) {
     const char* event_str = yyjson_get_str(ev);
     if (event_str) {
-      // Direct string comparison instead of hashing - simpler and safer
       if (strcmp(event_str, "login") == 0) return Route::LOGIN;
       if (strcmp(event_str, "subscribe") == 0) return Route::SUB;
     }
@@ -77,19 +74,16 @@ OkxBlob::OkxBlob(
                     requested);
     }
   }
-  // Constructor stays mostly the same, but don't start connections here
 }
 
 OkxBlob::~OkxBlob() { disconnect_websockets(); }
 
 void OkxBlob::on_start() { logger_->info("OkxBlob starting up"); }
 
-// Implement the state callbacks
 void OkxBlob::on_connecting() {
   logger_->info("OkxBlob entering CONNECTING state - loading credentials and initiating connection");
 
   try {
-    // load API credentials first
     load_api_credentials(blob_config_.api_file_path_);
 
   } catch (const std::exception& e) {
@@ -99,13 +93,9 @@ void OkxBlob::on_connecting() {
 }
 
 int OkxBlob::on_do_work() {
-  // Honest work accounting: only frames and state transitions count, so a
-  // backoff idle strategy can engage between messages.
   frames_this_pass_ = 0;
   int work_count = 0;
 
-  // Full websocket servicing.
-  // Reuse a member buffer instead of allocating a vector every work-loop pass.
   std::vector<struct pollfd>& all_fds = poll_fds_scratch_;
   all_fds.clear();
 
@@ -134,11 +124,9 @@ int OkxBlob::on_do_work() {
     lws_service(business_client_->get_context(), 0);
   }
 
-  // Drive state machines (this is where your state logic goes)
   work_count += drive_connection_state(public_client_, "public");
   work_count += drive_connection_state(business_client_, "business");
 
-  // Handle ping/pong and pending work
   int64_t now = get_nano_clock().epoch_nanos();
   if (public_client_) {
     public_client_->send_ping_if_needed(now);
@@ -149,7 +137,7 @@ int OkxBlob::on_do_work() {
     }
     if (public_client_->is_connection_timed_out(now)) {
       logger_->warn("Public channel connection timeout - retrying");
-      public_client_->disconnect(true, "public connection timeout"); // Hard reset for timeouts
+      public_client_->disconnect(true, "public connection timeout");
       work_count++;
     }
     if (public_client_->has_pending_work()) {
@@ -166,7 +154,7 @@ int OkxBlob::on_do_work() {
     }
     if (business_client_->is_connection_timed_out(now)) {
       logger_->warn("Business channel connection timeout - retrying");
-      business_client_->disconnect(true, "business connection timeout"); // Hard reset for timeouts
+      business_client_->disconnect(true, "business connection timeout");
       work_count++;
     }
 
@@ -187,7 +175,6 @@ int OkxBlob::drive_connection_state(std::unique_ptr<WebsocketClient>& client, co
 
   switch (state) {
     case ConnectionState::DISCONNECTED:
-      // Create the client if it doesn't exist
       if (!client) {
         if (channel_name == "public") {
           client = std::make_unique<WebsocketClient>(PUBLIC_WS_URL, "okx_public", get_nano_clock());
@@ -199,29 +186,24 @@ int OkxBlob::drive_connection_state(std::unique_ptr<WebsocketClient>& client, co
         work_done++;
       }
 
-      // Initiate connection (non-blocking)
       if (client) {
         client->connect();
         work_done++;
 
-        // Log the connection attempt
         logger_->info("Initiating connection to {} channel", channel_name);
       }
 
       break;
 
     case ConnectionState::CONNECTING:
-      // logger_->info("WebSocket {} channel connecting", channel_name);
       break;
 
     case ConnectionState::CONNECTED: {
       if (channel_name == "business") {
-        // Public channel can subscribe immediately
         subscribe_business_channels();
         client->set_state(ConnectionState::WORKING);
         work_done++;
         logger_->info("Subscribed to business channels");
-        // Public channel stays in CONNECTED state
 
       } else if (channel_name == "public") {
         if (requires_public_login()) {
@@ -245,8 +227,6 @@ int OkxBlob::drive_connection_state(std::unique_ptr<WebsocketClient>& client, co
     }
 
     case ConnectionState::AUTHENTICATING: {
-      // Waiting for auth response - message handler will transition to AUTHENTICATED
-      // logger_->info("Waiting for Public channel authentication response");
       break;
     }
 
@@ -261,12 +241,10 @@ int OkxBlob::drive_connection_state(std::unique_ptr<WebsocketClient>& client, co
     }
 
     case ConnectionState::WORKING: {
-      // Final state - just process messages
       break;
     }
 
     case ConnectionState::RECONNECTING:
-      // Handle reconnection logic
       break;
 
     case ConnectionState::ERROR:
@@ -279,8 +257,6 @@ int OkxBlob::drive_connection_state(std::unique_ptr<WebsocketClient>& client, co
       break;
   }
 
-  // Ping/pong, timeout and pending-work handling live in on_do_work() only;
-  // duplicating them here made timeout disconnects fire twice per loop.
 
   return work_done;
 }
@@ -294,10 +270,8 @@ void OkxBlob::load_api_credentials(const std::string& api_file_path) {
 
   std::string line;
   while (std::getline(file, line)) {
-    // Skip empty lines and comments
     if (line.empty() || line[0] == '#') continue;
 
-    // Handle both formats: "key=value" and "key : value" or "key = value"
     size_t delimiter = line.find('=');
     if (delimiter == std::string::npos) {
       delimiter = line.find(':');
@@ -307,7 +281,6 @@ void OkxBlob::load_api_credentials(const std::string& api_file_path) {
       std::string key = line.substr(0, delimiter);
       std::string value = line.substr(delimiter + 1);
 
-      // Trim whitespace, quotes, and carriage returns
       key.erase(0, key.find_first_not_of(" \t"));
       key.erase(key.find_last_not_of(" \t") + 1);
 
@@ -346,7 +319,6 @@ void OkxBlob::disconnect_websockets() {
   }
 }
 
-// Add these helper methods to avoid code duplication
 void OkxBlob::setup_public_client_callbacks(std::unique_ptr<WebsocketClient>& client) {
   client->set_message_callback([this](std::string_view message) { handle_public_message(message); });
 }
@@ -365,7 +337,6 @@ std::string OkxBlob::generate_hmac_signature(const std::string& timestamp, const
   HMAC(EVP_sha256(), secret_key_.c_str(), secret_key_.length(), reinterpret_cast<const unsigned char*>(prehash.c_str()),
        prehash.length(), digest, &digest_len);
 
-  // Base64 encode
   BIO* bio = BIO_new(BIO_s_mem());
   BIO* b64 = BIO_new(BIO_f_base64());
   BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
@@ -418,28 +389,24 @@ void OkxBlob::subscribe_public_channels() {
     const bool is_derivative =
         (symbol.find("-SWAP") != std::string::npos) || (symbol.find("-FUT") != std::string::npos);
 
-    // Queue L2 book subscription
     subscription_queue_->enqueue([this, symbol]() {
       std::string book_sub = get_book_subscription(symbol);
       public_client_->send_message_immediate(book_sub);
       logger_->info("Subscribed to {} for {}", book_channel_, symbol);
     });
 
-    // Queue L1 ticker subscription
     subscription_queue_->enqueue([this, symbol]() {
       std::string ticker_sub = get_ticker_subscription(symbol);
       public_client_->send_message_immediate(ticker_sub);
       logger_->info("Subscribed to L1 ticker for {}", symbol);
     });
 
-    // Queue mark price subscription
     subscription_queue_->enqueue([this, symbol]() {
       std::string mark_price_sub = get_mark_price_subscription(symbol);
       public_client_->send_message_immediate(mark_price_sub);
       logger_->info("Subscribed to mark price for {}", symbol);
     });
 
-    // Queue funding rate subscription (derivatives only)
     if (is_derivative) {
       subscription_queue_->enqueue([this, symbol]() {
         std::string funding_sub = get_funding_rate_subscription(symbol);
@@ -448,7 +415,6 @@ void OkxBlob::subscribe_public_channels() {
       });
     }
 
-    // Queue open interest subscription (derivatives only)
     if (is_derivative) {
       subscription_queue_->enqueue([this, symbol]() {
         std::string oi_sub = get_open_interest_subscription(symbol);
@@ -463,7 +429,6 @@ void OkxBlob::subscribe_business_channels() {
   logger_->info("Subscribing to business channels via queue");
 
   for (const auto& symbol : currency_pairs_) {
-    // Queue trade subscription
     subscription_queue_->enqueue([this, symbol]() {
       std::string trade_sub = get_trade_subscription(symbol);
       business_client_->send_message_immediate(trade_sub);
@@ -483,9 +448,6 @@ std::string OkxBlob::get_book_unsubscription(const std::string& symbol) {
 }
 
 void OkxBlob::resubscribe_book_channel(const std::string& symbol) {
-  // Gap recovery: unsubscribe + subscribe through the paced subscription queue
-  // so the venue's per-connection rate limits are respected. The fresh
-  // subscription re-seeds the book with a snapshot.
   subscription_queue_->enqueue([this, symbol]() {
     if (public_client_ && public_client_->is_connected()) {
       public_client_->send_message_immediate(get_book_unsubscription(symbol));
@@ -528,8 +490,6 @@ void OkxBlob::handle_public_message(std::string_view msg) {
     }
     return;
   }
-  // Parse exactly once; route_from_root and every process_* below operate on
-  // this same document root.
   yyjson_doc* doc = yyjson_read(msg.data(), msg.size(), 0);
   if (!doc) {
     warn_malformed("public", "JSON parse failure");
@@ -589,8 +549,6 @@ void OkxBlob::handle_business_message(std::string_view msg) {
 }
 
 void OkxBlob::warn_malformed(const char* channel, const char* what) {
-  // Rate-limited: a bad upstream burst must not turn into a log storm on the
-  // market-data hot path.
   const int64_t now = get_nano_clock().epoch_nanos();
   if (now - last_malformed_warn_ns_ < kMalformedWarnIntervalNanos) {
     return;
@@ -604,7 +562,7 @@ int32_t OkxBlob::resolve_instrument(const char* inst_id) noexcept {
     return -1;
   }
   for (const auto& entry : instrument_id_cache_) {
-    if (entry.symbol == inst_id) {  // length + memcmp, short-circuits fast
+    if (entry.symbol == inst_id) {
       return entry.instrument_id;
     }
   }
@@ -636,16 +594,9 @@ void OkxBlob::process_l2_update(yyjson_val* root) {
     return;
   }
 
-  // Snapshot detection from the parsed "action" field ("snapshot"/"update")
-  // instead of scanning the entire raw payload for the substring "snapshot".
   const char* action = yyjson_get_str(yyjson_obj_get(root, "action"));
   const bool is_snapshot = (action != nullptr) && std::strcmp(action, "snapshot") == 0;
 
-  // ---- L2 sequence-gap detection -----------------------------------------
-  // Every OKX books frame carries seqId/prevSeqId; prevSeqId must equal the
-  // seqId of the previous frame for this instrument. On a mismatch the local
-  // book is no longer trustworthy: drop the frame and re-subscribe so the
-  // book re-seeds from a fresh snapshot. A snapshot resets the tracked seq.
   const int64_t seq_id = yyjson_get_sint(yyjson_obj_get(data, "seqId"));
   if (static_cast<size_t>(instrument_id) < highest_seen_seq_num_.size()) {
     int64_t& tracked_seq = highest_seen_seq_num_[static_cast<size_t>(instrument_id)];
@@ -657,15 +608,14 @@ void OkxBlob::process_l2_update(yyjson_val* root) {
       if (prev_seq_val != nullptr && tracked_seq != 0 && prev_seq_id != tracked_seq) {
         logger_->error("L2 sequence gap on {}: prevSeqId={} but last seen seqId={} - resubscribing {}", inst_id,
                        prev_seq_id, tracked_seq, book_channel_);
-        tracked_seq = 0;  // nothing is in-sequence until the fresh snapshot re-seeds
+        tracked_seq = 0;
         resubscribe_book_channel(inst_id);
-        return;  // drop the gapped update
+        return;
       }
       tracked_seq = seq_id;
     }
   }
 
-  // ---- collect bids / asks as already-encoded mantissas into reused buffers
   auto fill_side = [this](yyjson_val* arr, std::vector<std::pair<int64_t, int64_t>>& out) {
     out.clear();
     if (!yyjson_is_arr(arr)) {
@@ -683,7 +633,7 @@ void OkxBlob::process_l2_update(yyjson_val* root) {
       const char* sz = yyjson_get_str(yyjson_arr_get(lvl, 1));
       if (px == nullptr || sz == nullptr) {
         warn_malformed(book_channel_.c_str(), "non-string price/size level");
-        continue;  // skip the malformed level
+        continue;
       }
       out.emplace_back(CodecUtils::encode_price(px), CodecUtils::encode_price(sz));
     }
@@ -710,7 +660,6 @@ void OkxBlob::process_l1_update(yyjson_val* root) {
     warn_malformed("bbo-tbt", "missing instId/ts");
     return;
   }
-  // OKX sends milliseconds; the recorded stream is normalized to nanoseconds.
   const int64_t exch_ts_ns = static_cast<int64_t>(std::strtoull(ts_str, nullptr, 10)) * 1000000LL;
 
   const int32_t instrument_id = resolve_instrument(inst_id);
@@ -718,7 +667,6 @@ void OkxBlob::process_l1_update(yyjson_val* root) {
     return;
   }
 
-  // Extract bid/ask - yyjson's fast array access
   int64_t bid_px_enc = 0;
   int64_t bid_sz_enc = 0;
   int64_t ask_px_enc = 0;
@@ -782,11 +730,8 @@ void OkxBlob::process_trade_event(yyjson_val* root) {
 
   double price = std::strtod(px_str, nullptr);
   double size = std::strtod(sz_str, nullptr);
-  // OKX sends milliseconds; the recorded stream is normalized to nanoseconds.
   const int64_t exch_ts_ns = static_cast<int64_t>(std::strtoull(ts_str, nullptr, 10)) * 1000000LL;
 
-  // side_raw points into the still-live yyjson document; publish_trade_data only
-  // reads it (compares against "buy"), so a view is safe and avoids an alloc.
   const char* side_raw = yyjson_get_str(yyjson_obj_get(data, "side"));
   const std::string_view side = side_raw ? std::string_view(side_raw) : std::string_view{};
 
@@ -930,7 +875,7 @@ void OkxBlob::publish_trade_data(int32_t instrument_id, int64_t price_enc, int64
 
   disruptorplus::sequence_range range;
   if (claim_strategy_->try_claim(1, range)) {
-    const auto seq = range.first();  // exactly one slot
+    const auto seq = range.first();
     auto* const trade = new ((*log_buffer_)[seq].raw_data()) TradeEvent();
 
     trade->instrument_id_ = instrument_id;
@@ -941,10 +886,6 @@ void OkxBlob::publish_trade_data(int32_t instrument_id, int64_t price_enc, int64
     trade->side_ = side;
     trade->exchange_ = Exchange::Okx;
 
-    // logger_->info(
-    //     "Publishing Trade Event at seq{}: timestamp={}, exchange_timestamp={}, exchange=OKX, instrument_id={},
-    //     price={}, size={}, side={}", seq, now, exch_ts_ns, instrument_id, price_enc, size_enc, side == Side::Buy ?
-    //     "Buy" : "Sell");
 
     claim_strategy_->publish(seq);
   } else {
@@ -970,11 +911,6 @@ void OkxBlob::publish_l1_update(int32_t instrument_id, int64_t bid_px_enc, int64
     l1_update->timestamp_ns_ = now;
     l1_update->exchange_ = Exchange::Okx;
 
-    // logger_->info(
-    //   "Publishing L1 Update at seq{}: timestamp={}, exchange_timestamp={}, exchange=OKX, instrument_id={},
-    //   bid_price={}, bid_size={}, ask_price={}, ask_size={}", seq, now, exch_ts_ns, instrument_id, bid_px_enc,
-    //   bid_sz_enc, ask_px_enc, ask_sz_enc
-    //   );
 
     claim_strategy_->publish(seq);
   } else {
@@ -982,26 +918,21 @@ void OkxBlob::publish_l1_update(int32_t instrument_id, int64_t bid_px_enc, int64
   }
 }
 
-// L2UpdateEvent has no exchange-timestamp field: L2 events carry local receive
-// time only (timestamp_ns_).
 void OkxBlob::publish_l2_book(int32_t instrument_id, const std::vector<std::pair<int64_t, int64_t>>& bids,
                               const std::vector<std::pair<int64_t, int64_t>>& asks, bool is_snapshot) {
   const int64_t now = get_nano_clock().epoch_nanos();
 
   if (bids.empty() && asks.empty()) {
-    return;  // Nothing to publish
+    return;
   }
 
-  // Helper lambda to publish a side (bids or asks) with dual-level packing
   auto publish_side = [&](const std::vector<std::pair<int64_t, int64_t>>& levels, Side side) {
     if (levels.empty()) {
       return;
     }
 
-    // Calculate number of messages needed (2 levels per message, round up)
     const size_t num_messages = (levels.size() + 1) / 2;
 
-    // Claim all slots for this side at once
     disruptorplus::sequence_range range;
     if (!claim_strategy_->try_claim(num_messages, range)) {
       logger_->error("Failed to claim {} slots in the ring buffer for L2 {} side", num_messages, to_string(side));
@@ -1014,16 +945,14 @@ void OkxBlob::publish_l2_book(int32_t instrument_id, const std::vector<std::pair
 
       msg->type_ = MessageType::L2UpdateEvent;
       msg->exchange_ = Exchange::Okx;
-      msg->side_ = side;  // SHARED for both levels
+      msg->side_ = side;
       msg->instrument_id_ = instrument_id;
       msg->timestamp_ns_ = now;
       msg->snapshot_ = is_snapshot ? BooleanEnum::TRUE : BooleanEnum::FALSE;
 
-      // Level 1 (always present)
       msg->price_1_ = levels[i].first;
       msg->size_1_ = levels[i].second;
 
-      // Level 2 (if exists)
       if (i + 1 < levels.size()) {
         msg->num_levels_ = 2;
         msg->price_2_ = levels[i + 1].first;
@@ -1034,7 +963,6 @@ void OkxBlob::publish_l2_book(int32_t instrument_id, const std::vector<std::pair
         msg->size_2_ = 0;
       }
 
-      // Batch flags
       msg->is_batch_message_ = (num_messages > 1) ? BooleanEnum::TRUE : BooleanEnum::FALSE;
       msg->is_last_batch_ = (i + 2 >= levels.size()) ? BooleanEnum::TRUE : BooleanEnum::FALSE;
 
@@ -1043,7 +971,6 @@ void OkxBlob::publish_l2_book(int32_t instrument_id, const std::vector<std::pair
     }
   };
 
-  // Publish bids first, then asks
   publish_side(bids, Side::Buy);
   publish_side(asks, Side::Sell);
 }
@@ -1116,4 +1043,4 @@ void OkxBlob::publish_open_interest(int32_t instrument_id, int64_t open_interest
     logger_->error("Failed to claim a slot in the ring buffer for open interest event");
   }
 }
-}  // namespace reflex
+}

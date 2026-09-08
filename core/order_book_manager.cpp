@@ -83,4 +83,4 @@ marketdata::IncrementalOrderBook& OrderBookManager::get_or_create_incremental_bo
   return it->second;
 }
 
-} // namespace reflex::backtest
+}

@@ -18,12 +18,6 @@ public:
   virtual void on_order_book_update(const IncrementalOrderBook& book) = 0;
 };
 
-/**
- * IncrementalOrderBook rebuilds the book between coarse-grained L2 snapshots by
- * replaying higher-frequency L1 and trade events. Keeping this state inside the
- * trading stack lets live trading, telemetry capture, and offline calibration
- * share the same view of the market.
- */
 class IncrementalOrderBook {
 public:
   struct Level {
@@ -118,4 +112,4 @@ private:
   std::vector<IncrementalOrderBookListener*> listeners_;
 };
 
-} // namespace reflex::marketdata
+}

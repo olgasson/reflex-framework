@@ -21,17 +21,15 @@ BinaryReader::~BinaryReader() {
 
 bool BinaryReader::open() {
     if (fd_ != -1) {
-        close(); // Already open, close first
+        close();
     }
 
-    // Open file for reading
     fd_ = ::open(file_path_.c_str(), O_RDONLY);
     if (fd_ == -1) {
         std::cerr << "Failed to open file: " << file_path_ << " - " << strerror(errno) << std::endl;
         return false;
     }
 
-    // Get file size
     struct stat st;
     if (fstat(fd_, &st) == -1) {
         std::cerr << "Failed to get file size: " << file_path_ << " - " << strerror(errno) << std::endl;
@@ -40,13 +38,11 @@ bool BinaryReader::open() {
     }
     file_size_ = st.st_size;
 
-    // Memory map the file
     if (!memory_map_file()) {
         close();
         return false;
     }
 
-    // Read and validate header
     if (file_size_ < sizeof(reflex::FileHeader)) {
         std::cerr << "File too small for header: " << file_path_ << std::endl;
         close();
@@ -55,7 +51,6 @@ bool BinaryReader::open() {
 
     const reflex::FileHeader* file_header = static_cast<const reflex::FileHeader*>(mapped_memory_);
 
-    // Validate magic number (0x52454658 = "REFX")
     if (file_header->magic_number_ != 0x52454658) {
         std::cerr << "Invalid magic number " << std::hex << file_header->magic_number_
                   << " in file: " << file_path_ << std::endl;
@@ -63,7 +58,6 @@ bool BinaryReader::open() {
         return false;
     }
 
-    // Validate version
     if (file_header->version_ != 1) {
         std::cerr << "Unsupported file version " << file_header->version_
                   << " in file: " << file_path_ << std::endl;
@@ -71,10 +65,8 @@ bool BinaryReader::open() {
         return false;
     }
 
-    // Set up data pointers
     data_start_ = static_cast<const char*>(mapped_memory_) + sizeof(reflex::FileHeader);
 
-    // Calculate total messages based on remaining file size
     size_t data_size = file_size_ - sizeof(reflex::FileHeader);
     if (file_header->message_slot_size_ == 0 || file_header->message_slot_size_ != sizeof(MessageSlot)) {
         std::cerr << "Invalid message slot size " << file_header->message_slot_size_
@@ -86,7 +78,6 @@ bool BinaryReader::open() {
     total_messages_ = data_size / file_header->message_slot_size_;
     current_position_ = 0;
 
-    // Initialise pointer‐cursor bounds
     cursor_   = data_start_;
     data_end_ = data_start_ + total_messages_ * sizeof(MessageSlot);
 
@@ -115,7 +106,7 @@ const MessageSlot* BinaryReader::read_next_message() {
 
     const MessageSlot* slot = reinterpret_cast<const MessageSlot*>(cursor_);
     cursor_ += sizeof(MessageSlot);
-    ++current_position_;            // keep stats
+    ++current_position_;
 
     return slot;
 }
@@ -135,9 +126,7 @@ bool BinaryReader::memory_map_file() {
         return false;
     }
 
-    // Advise kernel about access pattern
     if (madvise(mapped_memory_, file_size_, MADV_SEQUENTIAL) == -1) {
-        // Not fatal, just a performance hint
         std::cerr << "Warning: madvise failed for file: " << file_path_ << std::endl;
     }
 
@@ -151,7 +140,6 @@ void BinaryReader::unmap_file() {
     }
 }
 
-// MultiFileBinaryReader implementation
 MultiFileBinaryReader::MultiFileBinaryReader(std::vector<std::string> file_paths,
                                              bool merge_by_timestamp)
     : file_paths_(std::move(file_paths)),
@@ -185,7 +173,6 @@ bool MultiFileBinaryReader::open_current_reader() {
             ++current_reader_index_;
             continue;
         }
-        // Skip empty files immediately so peek() always has a timestamp
         if (reader->is_end_of_file()) {
             reader->close();
             ++current_reader_index_;
@@ -232,7 +219,7 @@ const MessageSlot* MultiFileBinaryReader::read_next_message() {
         advance_to_next_file();
     }
 
-    return nullptr; // All files exhausted
+    return nullptr;
 }
 
 uint64_t MultiFileBinaryReader::total_messages() const {
@@ -264,11 +251,6 @@ bool MultiFileBinaryReader::has_more_data() {
         return std::any_of(merged_readers_.begin(), merged_readers_.end(),
                            [](const auto& reader) { return !reader->is_end_of_file(); });
     }
-    // Skip past exhausted files eagerly: open_current_reader() already discards
-    // files that fail to open or contain no messages, so "true" here guarantees
-    // read_next_message() will produce a slot. (The old implementation counted
-    // remaining paths without opening them, which reported phantom data when the
-    // trailing files were unreadable or header-only.)
     while (open_current_reader()) {
         if (!current_reader_->is_end_of_file()) {
             return true;
@@ -291,10 +273,9 @@ int64_t MultiFileBinaryReader::peek_next_timestamp() {
         if (ts != INT64_MAX) {
             return ts;
         }
-        // Current file exhausted but caller hasn't consumed the EOF yet.
         advance_to_next_file();
     }
-    return INT64_MAX;  // all files exhausted
+    return INT64_MAX;
 }
 
 const std::string& MultiFileBinaryReader::current_file() const {
@@ -302,4 +283,4 @@ const std::string& MultiFileBinaryReader::current_file() const {
     return current_reader_index_ < file_paths_.size() ? file_paths_[current_reader_index_] : kNone;
 }
 
-} // namespace reflex::backtest
+}

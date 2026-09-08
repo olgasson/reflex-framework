@@ -8,7 +8,6 @@
 #include <variant>
 
 namespace reflex {
-// ================= ENUMS =================
 
 enum class OrderState : std::int8_t {
   Undefined = 0,
@@ -121,8 +120,6 @@ enum class MessageType : int8_t {
   AdminCommandResultEvent = 21,
   GatewayStatusEvent = 22,
   PositionUpdateEvent = 23,
-  // ABI: append-only. New values MUST go at the end so historical captures
-  // keep decoding identically.
   LiquidationEvent = 24
 };
 
@@ -265,8 +262,6 @@ enum class ExecInst : int8_t {
   ReduceOnly = 3
 };
 
-// Carried with cancel events so the gateway can reserve order-operation
-// capacity for safety actions without classifying cosmetic expiry as risk.
 enum class CancelPriority : int8_t {
   Ordinary = 0,
   RiskReducing = 1,
@@ -386,7 +381,6 @@ inline std::ostream& operator<<(std::ostream& os, CancelReason r) {
   return os << to_string(r);
 }
 
-// Add these new enums for market data
 enum class Exchange : int8_t {
   Binance = 1,
   BinanceDerivatives = 2,
@@ -401,7 +395,6 @@ enum class BooleanEnum : int8_t {
 
 constexpr size_t SERVICE_NAME_LENGTH = 16;
 
-// ================= STRUCTS =================
 
 struct alignas(64) HeartbeatEvent {
   static constexpr MessageType MESSAGE_TYPE = MessageType::Heartbeat;
@@ -432,8 +425,6 @@ inline std::ostream& operator<<(std::ostream& os, const HeartbeatEvent& e) {
   return os;
 }
 
-
-// ORDER EVENTS
 
 struct alignas(64) PendingEvent {
   static constexpr MessageType MESSAGE_TYPE = MessageType::Pending;
@@ -488,8 +479,6 @@ struct alignas(64) AcceptedEvent {
   int64_t timestamp_ns_;
   int64_t order_id_;
   int64_t exchange_order_id_;
-  // Backtest-only execution midpoint (bid + ask) at exchange arrival. Live
-  // gateways leave this zero, preserving the existing wire layout.
   int64_t backtest_arrival_mid_x2_;
   int8_t body_reserved_[24];
 
@@ -549,18 +538,11 @@ struct alignas(64) ExecutedEvent {
   int64_t last_quantity_;
   union {
     int64_t commission_;
-    // Backtest-only execution midpoint (bid + ask) at the exact exchange fill
-    // timestamp. commission_valid_ distinguishes the live commission member;
-    // the simulator does not model a separate commission field.
     int64_t backtest_execution_mid_x2_;
   };
   int32_t instrument_id_;
   Side side_;
   uint8_t commission_valid_;
-  // Binance's private fill carries venue time in milliseconds. Preserve it
-  // without widening the fixed 64-byte message slot: live receipt time and
-  // venue time differ by milliseconds, so a signed delta has ample range.
-  // The full venue timestamp is expanded into TelemetryFill before persist.
   int16_t exchange_time_delta_ms_;
 
   ExecutedEvent()
@@ -757,7 +739,6 @@ struct alignas(64) ReplaceAcceptedEvent {
   int64_t timestamp_ns_;
   int64_t order_id_;
   int64_t request_id_;
-  // Backtest-only execution midpoint (bid + ask) at replacement arrival.
   int64_t backtest_arrival_mid_x2_;
   int8_t body_reserved_[24];
 
@@ -813,7 +794,6 @@ inline std::ostream& operator<<(std::ostream& os, const ReplaceRejectedEvent& e)
   return os;
 }
 
-// Trade event structure - simplified with timestamp_ns
 struct alignas(64) TradeEvent {
   static constexpr MessageType MESSAGE_TYPE = MessageType::TradeEvent;
 
@@ -827,9 +807,6 @@ struct alignas(64) TradeEvent {
   Exchange exchange_;
   Side side_;
   int8_t body_reserved_[2];
-  // Binance public-trade identity. Individual trades have first == last;
-  // older aggregate captures may contain an inclusive id range. Zero on feeds
-  // without this concept.
   int64_t first_trade_id_;
   int64_t last_trade_id_;
 
@@ -855,7 +832,6 @@ inline std::ostream& operator<<(std::ostream& os, const TradeEvent& e) {
   return os;
 }
 
-// L1 update event structure - simplified with timestamp_ns
 struct alignas(64) L1UpdateEvent {
   static constexpr MessageType MESSAGE_TYPE = MessageType::L1UpdateEvent;
   MessageType type_;
@@ -895,28 +871,24 @@ inline std::ostream& operator<<(std::ostream& os, const L1UpdateEvent& e) {
 struct alignas(64) L2UpdateEvent {
   static constexpr MessageType MESSAGE_TYPE = MessageType::L2UpdateEvent;
 
-  // ===== Header: 16 bytes =====
-  MessageType type_;                  // 1 byte
-  Exchange exchange_;                  // 1 byte
-  Side side_;                          // 1 byte - SHARED for both levels
-  uint8_t num_levels_;                 // 1 byte - 1 or 2
-  int32_t instrument_id_;              // 4 bytes
-  int64_t timestamp_ns_;               // 8 bytes - LOCAL capture time
+  MessageType type_;
+  Exchange exchange_;
+  Side side_;
+  uint8_t num_levels_;
+  int32_t instrument_id_;
+  int64_t timestamp_ns_;
 
-  // ===== Batch Flags: 8 bytes =====
-  BooleanEnum snapshot_;               // 1 byte
-  BooleanEnum is_batch_message_;       // 1 byte - TRUE if part of multi-message batch
-  BooleanEnum is_last_batch_;          // 1 byte - TRUE if last message in batch
-  int8_t header_reserved_[5];          // 5 bytes padding
+  BooleanEnum snapshot_;
+  BooleanEnum is_batch_message_;
+  BooleanEnum is_last_batch_;
+  int8_t header_reserved_[5];
 
-  // ===== Level Data: 32 bytes (2×16) =====
-  int64_t price_1_;                    // 8 bytes
-  int64_t size_1_;                     // 8 bytes
-  int64_t price_2_;                    // 8 bytes (0 if num_levels==1)
-  int64_t size_2_;                     // 8 bytes (0 if num_levels==1)
+  int64_t price_1_;
+  int64_t size_1_;
+  int64_t price_2_;
+  int64_t size_2_;
 
-  // ===== Reserved: 7 bytes =====
-  int8_t reserved_[7];                 // Future expansion; alignas(64) supplies the final padding byte
+  int8_t reserved_[7];
 
   L2UpdateEvent()
     : type_(MESSAGE_TYPE), exchange_(Exchange::Unknown),
@@ -1060,9 +1032,6 @@ struct alignas(64) OpenInterestEvent {
         body_reserved_{0} {}
 };
 
-// Control traffic deliberately uses a separate SPSC ring from market data and
-// order responses. Keeping these messages fixed-size preserves the same
-// allocation-free handoff and makes the algo thread the only state owner.
 struct alignas(64) AdminCommandEvent {
   static constexpr MessageType MESSAGE_TYPE = MessageType::AdminCommandEvent;
 
@@ -1073,7 +1042,7 @@ struct alignas(64) AdminCommandEvent {
   uint64_t command_id_;
   int64_t quantity_;
   int64_t limit_price_;
-  int32_t instrument_id_;  // Per-symbol command target (0 = none)
+  int32_t instrument_id_;
   int8_t body_reserved_[20];
 
   AdminCommandEvent()
@@ -1160,10 +1129,6 @@ struct alignas(64) PositionUpdateEvent {
 static_assert(sizeof(PositionUpdateEvent) == 64,
               "PositionUpdateEvent must be 64 bytes");
 
-// Forced liquidation order (Binance futures @forceOrder). side_ is the side
-// of the forced order itself: a Sell liquidation closes a long position.
-// price_/quantity_/cumulative_quantity_/average_price_ use the shared
-// fixed-point 1e8 encoding; quantity_ is the last filled quantity ("l").
 struct alignas(64) LiquidationEvent {
   static constexpr MessageType MESSAGE_TYPE = MessageType::LiquidationEvent;
 
@@ -1172,9 +1137,9 @@ struct alignas(64) LiquidationEvent {
   int64_t timestamp_ns_;
   int64_t exchange_timestamp_ns_;
   int64_t price_;
-  int64_t quantity_;             // last filled quantity ("l")
-  int64_t cumulative_quantity_;  // cumulative filled quantity ("z")
-  int64_t average_price_;        // average fill price ("ap")
+  int64_t quantity_;
+  int64_t cumulative_quantity_;
+  int64_t average_price_;
   int32_t instrument_id_;
   Exchange exchange_;
   Side side_;
@@ -1221,26 +1186,20 @@ inline std::ostream& operator<<(std::ostream& os, const OpenInterestEvent& e) {
 }
 
 
-// Raw 64-byte buffer that can hold any message type
 struct alignas(64) MessageSlot {
     alignas(64) std::byte data_[64];
 
     MessageSlot() : data_{} {}
 
-    // Get the message type (always at offset 0). Read via memcpy so no
-    // object of type MessageType has to live at that address.
     MessageType get_type() const noexcept {
         MessageType type;
         std::memcpy(&type, data_, sizeof(type));
         return type;
     }
 
-    // Raw access
     std::byte* raw_data() noexcept { return data_; }
     const std::byte* raw_data() const noexcept { return data_; }
 
-    // Direct cast access for reading. Events are placement-new'd into data_
-    // by the writers; std::launder makes the pointer to that object valid.
     template<typename T>
     const T& as() const noexcept {
         static_assert(sizeof(T) <= 64, "Message too large");
@@ -1264,4 +1223,4 @@ using BaseEvent = std::variant<
   CancelRejectedEvent,
   ExecutedEvent
 >;
-} // namespace reflex
+}

@@ -1,4 +1,3 @@
-// ring_buffer_writer.cpp
 #include "framework/ring_buffer_writer.hpp"
 
 #include "spdlog/fmt/bundled/ostream.h"
@@ -13,7 +12,7 @@ inline void log_publish_if_debug_enabled(spdlog::logger* logger, const Event& ev
     }
 }
 
-}  // namespace
+}
 
 RingBufferWriter::RingBufferWriter(
     const std::shared_ptr<disruptorplus::ring_buffer<MessageSlot>>& buffer,
@@ -32,9 +31,6 @@ RingBufferWriter::RingBufferWriter(
 std::atomic<uint64_t> RingBufferWriter::ring_full_stalls{0};
 
 bool RingBufferWriter::claim_with_retry(disruptorplus::sequence_range& range) const {
-    // The consumer drains at MHz rates; a momentarily full ring normally
-    // clears within microseconds, so a short spin avoids the blocking path
-    // (and its log line) for transient bursts.
     for (int spin = 0; spin < 20000; ++spin) {
         if (claim_strategy_->try_claim(1, range)) return true;
     }
@@ -49,9 +45,6 @@ void RingBufferWriter::send_event(FillFn&& fill) {
     if (claim_with_retry(range)) {
         seq = range.first();
     } else {
-        // Rare path: a full SPSC ring means the consumer stalled. Dropping an
-        // order-lifecycle event would silently desync order state, so spin
-        // (via the claim barrier's wait strategy) until a slot frees up.
         logger_->warn("Ring buffer full while publishing {} event; spinning until a slot is free",
                       to_string(Event::MESSAGE_TYPE));
         seq = claim_strategy_->claim_one();
@@ -79,8 +72,6 @@ void RingBufferWriter::send_pending(const Order& order) {
         event.parent_id_ = order.parent_id_;
         event.request_id_ = order.request_id_;
         event.account_ = order.account_;
-        // Stamp at publish time: Order.timestamp_ns_ is not reliably set by
-        // callers, and a zero timestamp makes order-path latency unmeasurable.
         if (order.timestamp_ns_ != 0) {
             event.timestamp_ns_ = order.timestamp_ns_;
         }
@@ -97,7 +88,6 @@ void RingBufferWriter::send_accepted(const Order& order) {
 void RingBufferWriter::send_rejected(const Order& order) {
     send_event<RejectedEvent>([&order](RejectedEvent& event) {
         event.order_id_ = order.order_id_;
-        // Note: reason would need to be added to RejectedEvent struct if needed
     });
 }
 
@@ -156,4 +146,4 @@ void RingBufferWriter::send_executed(const int64_t order_id, const int64_t last_
     });
 }
 
-} // namespace reflex
+}
